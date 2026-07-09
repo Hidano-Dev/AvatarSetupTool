@@ -1,5 +1,11 @@
 {
   "dependencies": {
+    "com.hidano.avatarsetuptool": {
+      "version": "file:com.hidano.avatarsetuptool",
+      "depth": 0,
+      "source": "embedded",
+      "dependencies": {}
+    },
     "com.unity.burst": {
       "version": "1.8.29",
       "depth": 2,
