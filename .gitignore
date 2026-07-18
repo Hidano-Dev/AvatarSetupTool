@@ -62,6 +62,9 @@ sysinfo.txt
 # Crashlytics generated file
 crashlytics-build.properties
 
+# Avatar Setup Tool のキャプチャ出力
+[Cc]aptures/
+
 # Others
 .DS_Store
 .vscode
