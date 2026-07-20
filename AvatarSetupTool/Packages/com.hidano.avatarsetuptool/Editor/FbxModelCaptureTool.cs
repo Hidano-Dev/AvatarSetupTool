@@ -1,14 +1,18 @@
+using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using UnityEditor;
 using UnityEngine;
 
 namespace Hidano.AvatarSetupTool.Editor
 {
     /// <summary>
-    /// Project ウィンドウで選択した FBX を 8 方向 × (全身 / 顔アップ) の
+    /// Project ウィンドウで選択した FBX / Prefab を 8 方向 × (全身 / 顔アップ) の
     /// 計 16 枚の PNG としてキャプチャする。
+    /// Avatar が設定された Animator を撮影対象とし、複数ある場合は
+    /// オブジェクト名ごとにすべて撮影する。見つからない場合はダイアログで警告する。
     /// カメラは並行投影・背景は白単色。
-    /// 出力先: (Unity プロジェクトルート)/Captures/(FBX 名)/
+    /// 出力先: (Unity プロジェクトルート)/Captures/(アセット名)/
     /// </summary>
     public static class FbxModelCaptureTool
     {
@@ -37,13 +41,23 @@ namespace Hidano.AvatarSetupTool.Editor
         [MenuItem(MenuPath)]
         private static void Capture()
         {
+            var assetsWithoutAvatar = new List<string>();
             foreach (var obj in Selection.objects)
             {
                 var path = AssetDatabase.GetAssetPath(obj);
-                if (IsFbx(path))
+                if (IsCapturableAsset(path) && !CaptureAsset(path))
                 {
-                    CaptureFbx(path);
+                    assetsWithoutAvatar.Add(Path.GetFileName(path));
                 }
+            }
+
+            if (assetsWithoutAvatar.Count > 0)
+            {
+                EditorUtility.DisplayDialog(
+                    "Capture Model Images",
+                    "Avatar が設定された Animator が見つからなかったため、以下のアセットはスキップしました:\n\n"
+                    + string.Join("\n", assetsWithoutAvatar),
+                    "OK");
             }
         }
 
@@ -52,7 +66,7 @@ namespace Hidano.AvatarSetupTool.Editor
         {
             foreach (var obj in Selection.objects)
             {
-                if (IsFbx(AssetDatabase.GetAssetPath(obj)))
+                if (IsCapturableAsset(AssetDatabase.GetAssetPath(obj)))
                 {
                     return true;
                 }
@@ -61,24 +75,25 @@ namespace Hidano.AvatarSetupTool.Editor
             return false;
         }
 
-        private static bool IsFbx(string path)
+        private static bool IsCapturableAsset(string path)
         {
             return !string.IsNullOrEmpty(path)
-                && path.EndsWith(".fbx", System.StringComparison.OrdinalIgnoreCase);
+                && (path.EndsWith(".fbx", System.StringComparison.OrdinalIgnoreCase)
+                    || path.EndsWith(".prefab", System.StringComparison.OrdinalIgnoreCase));
         }
 
-        private static void CaptureFbx(string assetPath)
+        /// <summary>
+        /// アセット内の Avatar 付き Animator をすべて撮影する。
+        /// Avatar 付き Animator が 1 つも見つからなければ false を返す(撮影は行わない)。
+        /// </summary>
+        private static bool CaptureAsset(string assetPath)
         {
             var prefab = AssetDatabase.LoadMainAssetAtPath(assetPath) as GameObject;
             if (prefab == null)
             {
                 Debug.LogError($"[AvatarSetupTool] モデルを読み込めませんでした: {assetPath}");
-                return;
+                return true;
             }
-
-            var fbxName = Path.GetFileNameWithoutExtension(assetPath);
-            var outputDir = Path.Combine(GetProjectRootPath(), "Captures", fbxName);
-            Directory.CreateDirectory(outputDir);
 
             var preview = new PreviewRenderUtility();
             try
@@ -88,37 +103,87 @@ namespace Hidano.AvatarSetupTool.Editor
                 var instance = preview.InstantiatePrefabInScene(prefab);
                 instance.transform.position = Vector3.zero;
 
+                var targets = instance.GetComponentsInChildren<Animator>(true)
+                    .Where(animator => animator.avatar != null)
+                    .ToArray();
+                if (targets.Length == 0)
+                {
+                    return false;
+                }
+
+                var assetName = Path.GetFileNameWithoutExtension(assetPath);
+                var outputDir = Path.Combine(GetProjectRootPath(), "Captures", assetName);
+                Directory.CreateDirectory(outputDir);
+
+                var allRenderers = instance.GetComponentsInChildren<Renderer>(true);
+
                 // SRP では最初のレンダリングが空になることがあるため、1 回捨てレンダリングする
                 Warmup(preview, CalculateBounds(instance));
 
+                var usedNames = new HashSet<string>();
+                var total = targets.Length * Directions.Length * 2;
                 var shot = 0;
-                foreach (var (dirName, yaw) in Directions)
+                foreach (var animator in targets)
                 {
-                    instance.transform.rotation = Quaternion.Euler(0f, yaw, 0f);
-                    var bounds = CalculateBounds(instance);
+                    var target = animator.gameObject;
+                    var captureName = MakeUniqueName(SanitizeFileName(target.name), usedNames);
 
-                    EditorUtility.DisplayProgressBar(
-                        "Capture Model Images", $"{fbxName}: {dirName}", shot / (float)(Directions.Length * 2));
+                    // 対象の Animator 配下だけを描画し、他の Animator と混ざらないようにする
+                    foreach (var renderer in allRenderers)
+                    {
+                        renderer.enabled = renderer.transform.IsChildOf(target.transform);
+                    }
 
-                    var fullSize = Mathf.Max(bounds.extents.y, bounds.extents.x) * FullBodyMargin;
-                    RenderToFile(preview, bounds.center, fullSize, bounds.extents.z,
-                        Path.Combine(outputDir, $"{fbxName}_{dirName}_full.png"));
-                    shot++;
+                    foreach (var (dirName, yaw) in Directions)
+                    {
+                        target.transform.rotation = Quaternion.Euler(0f, yaw, 0f);
+                        var bounds = CalculateBounds(target);
 
-                    var (faceCenter, faceSize) = GetFaceView(instance, bounds);
-                    RenderToFile(preview, faceCenter, faceSize, bounds.extents.z,
-                        Path.Combine(outputDir, $"{fbxName}_{dirName}_face.png"));
-                    shot++;
+                        EditorUtility.DisplayProgressBar(
+                            "Capture Model Images", $"{captureName}: {dirName}", shot / (float)total);
+
+                        var fullSize = Mathf.Max(bounds.extents.y, bounds.extents.x) * FullBodyMargin;
+                        RenderToFile(preview, bounds.center, fullSize, bounds.extents.z,
+                            Path.Combine(outputDir, $"{captureName}_{dirName}_full.png"));
+                        shot++;
+
+                        var (faceCenter, faceSize) = GetFaceView(animator, bounds);
+                        RenderToFile(preview, faceCenter, faceSize, bounds.extents.z,
+                            Path.Combine(outputDir, $"{captureName}_{dirName}_face.png"));
+                        shot++;
+                    }
                 }
 
-                Debug.Log($"[AvatarSetupTool] {fbxName}: {shot} 枚のキャプチャを保存しました: {outputDir}");
+                Debug.Log($"[AvatarSetupTool] {assetName}: {shot} 枚のキャプチャを保存しました: {outputDir}");
                 EditorUtility.RevealInFinder(outputDir);
+                return true;
             }
             finally
             {
                 preview.Cleanup();
                 EditorUtility.ClearProgressBar();
             }
+        }
+
+        private static string SanitizeFileName(string name)
+        {
+            foreach (var invalid in Path.GetInvalidFileNameChars())
+            {
+                name = name.Replace(invalid, '_');
+            }
+
+            return name;
+        }
+
+        private static string MakeUniqueName(string name, HashSet<string> usedNames)
+        {
+            var unique = name;
+            for (var i = 2; !usedNames.Add(unique); i++)
+            {
+                unique = $"{name}_{i}";
+            }
+
+            return unique;
         }
 
         private static string GetProjectRootPath()
@@ -157,11 +222,10 @@ namespace Hidano.AvatarSetupTool.Editor
             return bounds;
         }
 
-        private static (Vector3 Center, float OrthoSize) GetFaceView(GameObject instance, Bounds bounds)
+        private static (Vector3 Center, float OrthoSize) GetFaceView(Animator animator, Bounds bounds)
         {
             Transform head = null;
-            var animator = instance.GetComponentInChildren<Animator>(true);
-            if (animator != null && animator.isHuman)
+            if (animator.isHuman)
             {
                 head = animator.GetBoneTransform(HumanBodyBones.Head);
             }
@@ -174,7 +238,7 @@ namespace Hidano.AvatarSetupTool.Editor
             else
             {
                 Debug.LogWarning(
-                    $"[AvatarSetupTool] Head ボーンが取得できないため、バウンズ上部 {FaceFallbackHeightRatio:P0} を顔とみなします: {instance.name}");
+                    $"[AvatarSetupTool] Head ボーンが取得できないため、バウンズ上部 {FaceFallbackHeightRatio:P0} を顔とみなします: {animator.gameObject.name}");
                 headPosition = new Vector3(
                     bounds.center.x,
                     bounds.max.y - bounds.size.y * FaceFallbackHeightRatio,
