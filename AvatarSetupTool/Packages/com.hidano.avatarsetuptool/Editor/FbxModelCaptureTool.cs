@@ -12,14 +12,16 @@ namespace Hidano.AvatarSetupTool.Editor
     /// Avatar が設定された Animator を撮影対象とし、複数ある場合は
     /// オブジェクト名ごとにすべて撮影する。見つからない場合はダイアログで警告する。
     /// カメラは並行投影・背景は白単色。
-    /// 出力先: (Unity プロジェクトルート)/Captures/(アセット名)/
+    /// 出力先: 実行時にフォルダ選択ダイアログで指定する。
+    /// 初期値はマイピクチャ、以降は前回選択したフォルダを記憶する。
     /// </summary>
     public static class FbxModelCaptureTool
     {
         private const string MenuPath = "Assets/Avatar Setup Tool/Capture Model Images";
-        private const int ImageSize = 1024;
+        private const string OutputDirPrefsKey = "Hidano.AvatarSetupTool.FbxModelCaptureTool.OutputDir";
+        private const int ImageSize = 2048;
         private const float FullBodyMargin = 1.05f;
-        private const float FaceMargin = 0.75f;
+        private const float FacePaddingRatio = 0.1f;
         private const float FaceFallbackHeightRatio = 0.15f;
 
         /// <summary>
@@ -41,11 +43,17 @@ namespace Hidano.AvatarSetupTool.Editor
         [MenuItem(MenuPath)]
         private static void Capture()
         {
+            var outputRoot = SelectOutputRoot();
+            if (string.IsNullOrEmpty(outputRoot))
+            {
+                return;
+            }
+
             var assetsWithoutAvatar = new List<string>();
             foreach (var obj in Selection.objects)
             {
                 var path = AssetDatabase.GetAssetPath(obj);
-                if (IsCapturableAsset(path) && !CaptureAsset(path))
+                if (IsCapturableAsset(path) && !CaptureAsset(path, outputRoot))
                 {
                     assetsWithoutAvatar.Add(Path.GetFileName(path));
                 }
@@ -83,10 +91,45 @@ namespace Hidano.AvatarSetupTool.Editor
         }
 
         /// <summary>
+        /// 出力先フォルダをダイアログで選択させる。
+        /// 初期表示は前回選択したフォルダ(EditorPrefs)、無ければマイピクチャ。
+        /// キャンセル時は null を返す。
+        /// </summary>
+        private static string SelectOutputRoot()
+        {
+            var lastDir = EditorPrefs.GetString(OutputDirPrefsKey, string.Empty);
+            if (string.IsNullOrEmpty(lastDir) || !Directory.Exists(lastDir))
+            {
+                lastDir = GetDefaultOutputRoot();
+            }
+
+            var selected = EditorUtility.OpenFolderPanel("キャプチャの出力先を選択", lastDir, string.Empty);
+            if (string.IsNullOrEmpty(selected))
+            {
+                return null;
+            }
+
+            EditorPrefs.SetString(OutputDirPrefsKey, selected);
+            return selected;
+        }
+
+        /// <summary>
+        /// マイピクチャの実パスを OS に問い合わせて返す。
+        /// ユーザーがフォルダを移動している場合も追従する。取得できなければプロジェクトルート。
+        /// </summary>
+        private static string GetDefaultOutputRoot()
+        {
+            var pictures = System.Environment.GetFolderPath(System.Environment.SpecialFolder.MyPictures);
+            return string.IsNullOrEmpty(pictures)
+                ? Path.GetDirectoryName(Application.dataPath)
+                : pictures;
+        }
+
+        /// <summary>
         /// アセット内の Avatar 付き Animator をすべて撮影する。
         /// Avatar 付き Animator が 1 つも見つからなければ false を返す(撮影は行わない)。
         /// </summary>
-        private static bool CaptureAsset(string assetPath)
+        private static bool CaptureAsset(string assetPath, string outputRoot)
         {
             var prefab = AssetDatabase.LoadMainAssetAtPath(assetPath) as GameObject;
             if (prefab == null)
@@ -112,7 +155,7 @@ namespace Hidano.AvatarSetupTool.Editor
                 }
 
                 var assetName = Path.GetFileNameWithoutExtension(assetPath);
-                var outputDir = Path.Combine(GetProjectRootPath(), "Captures", assetName);
+                var outputDir = Path.Combine(outputRoot, assetName);
                 Directory.CreateDirectory(outputDir);
 
                 var allRenderers = instance.GetComponentsInChildren<Renderer>(true);
@@ -186,11 +229,6 @@ namespace Hidano.AvatarSetupTool.Editor
             return unique;
         }
 
-        private static string GetProjectRootPath()
-        {
-            return Path.GetDirectoryName(Application.dataPath);
-        }
-
         private static void SetupCameraAndLights(PreviewRenderUtility preview)
         {
             var camera = preview.camera;
@@ -222,33 +260,43 @@ namespace Hidano.AvatarSetupTool.Editor
             return bounds;
         }
 
+        /// <summary>
+        /// 顔アップの構図を求める。
+        /// 首(Neck)ジョイントを画像中心に置き、頭頂のメッシュ(バウンズ上端)が
+        /// 画像上端から高さの <see cref="FacePaddingRatio"/> 分の余白に収まるサイズを返す。
+        /// </summary>
         private static (Vector3 Center, float OrthoSize) GetFaceView(Animator animator, Bounds bounds)
         {
-            Transform head = null;
+            Transform neck = null;
             if (animator.isHuman)
             {
-                head = animator.GetBoneTransform(HumanBodyBones.Head);
+                neck = animator.GetBoneTransform(HumanBodyBones.Neck);
+                if (neck == null)
+                {
+                    neck = animator.GetBoneTransform(HumanBodyBones.Head);
+                }
             }
 
-            Vector3 headPosition;
-            if (head != null)
+            Vector3 neckPosition;
+            if (neck != null)
             {
-                headPosition = head.position;
+                neckPosition = neck.position;
             }
             else
             {
                 Debug.LogWarning(
-                    $"[AvatarSetupTool] Head ボーンが取得できないため、バウンズ上部 {FaceFallbackHeightRatio:P0} を顔とみなします: {animator.gameObject.name}");
-                headPosition = new Vector3(
+                    $"[AvatarSetupTool] Neck ボーンが取得できないため、バウンズ上部 {FaceFallbackHeightRatio:P0} を首位置とみなします: {animator.gameObject.name}");
+                neckPosition = new Vector3(
                     bounds.center.x,
                     bounds.max.y - bounds.size.y * FaceFallbackHeightRatio,
                     bounds.center.z);
             }
 
-            var topY = bounds.max.y;
-            var headToTop = Mathf.Max(topY - headPosition.y, bounds.size.y * 0.05f);
-            var center = new Vector3(headPosition.x, (headPosition.y + topY) * 0.5f, headPosition.z);
-            return (center, headToTop * FaceMargin);
+            // 中心(首)から画像上端までは orthoSize。頭頂の上に画像高さの
+            // FacePaddingRatio (= 2 * orthoSize * FacePaddingRatio) の余白を確保する。
+            var neckToTop = Mathf.Max(bounds.max.y - neckPosition.y, bounds.size.y * 0.05f);
+            var orthoSize = neckToTop / (1f - FacePaddingRatio * 2f);
+            return (neckPosition, orthoSize);
         }
 
         private static void Warmup(PreviewRenderUtility preview, Bounds bounds)

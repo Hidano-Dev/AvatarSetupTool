@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- `FbxModelCaptureTool` のキャプチャ解像度を 1024px から 2048px に変更
+- `FbxModelCaptureTool` の顔アップ構図を変更: 首(Neck)ジョイントを画像中心に置き、頭頂のメッシュが画像高さの 10% の余白に収まるようサイズを自動調整
+- `FbxModelCaptureTool` の出力先を実行時のフォルダ選択ダイアログに変更。初期値はマイピクチャ(OS から実パスを取得)、前回選択したフォルダを EditorPrefs に記録して次回の初期表示に使用
+
 ## [0.1.1] - 2026-07-18
 
 ### Added
