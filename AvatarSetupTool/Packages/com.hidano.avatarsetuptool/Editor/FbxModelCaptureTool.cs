@@ -236,11 +236,13 @@ namespace Hidano.AvatarSetupTool.Editor
             camera.clearFlags = CameraClearFlags.SolidColor;
             camera.backgroundColor = Color.white;
 
-            // モデル側を回転させるため、ライトはカメラ基準で固定になる
-            preview.lights[0].intensity = 1.2f;
-            preview.lights[0].transform.rotation = Quaternion.Euler(30f, 20f, 0f);
-            preview.lights[1].intensity = 0.8f;
-            preview.ambientColor = new Color(0.4f, 0.4f, 0.4f, 1f);
+            // モデル側を回転させるため、ライトはカメラ基準で固定になる。
+            // カメラは常に +Z を向くので、rotation = identity で真正面からの照射になる
+            preview.lights[0].color = Color.white;
+            preview.lights[0].intensity = 1f;
+            preview.lights[0].transform.rotation = Quaternion.identity;
+            preview.lights[1].intensity = 0f;
+            preview.ambientColor = Color.white;
         }
 
         private static Bounds CalculateBounds(GameObject instance)

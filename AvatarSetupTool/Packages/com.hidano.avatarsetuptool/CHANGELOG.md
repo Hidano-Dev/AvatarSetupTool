@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-07-24
+
+### Fixed
+
+- `FbxModelCaptureTool` のキャプチャが暗くなる問題を修正: 環境光を白(Color)に変更し、Directional Light を白・Intensity 1・カメラ正面からの照射に統一。補助ライトは無効化
+
 ## [0.2.0] - 2026-07-24
 
 ### Changed
