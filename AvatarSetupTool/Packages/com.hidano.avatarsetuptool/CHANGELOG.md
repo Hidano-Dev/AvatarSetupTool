@@ -7,11 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-07-24
+
 ### Changed
 
 - `FbxModelCaptureTool` のキャプチャ解像度を 1024px から 2048px に変更
 - `FbxModelCaptureTool` の顔アップ構図を変更: 首(Neck)ジョイントを画像中心に置き、頭頂のメッシュが画像高さの 10% の余白に収まるようサイズを自動調整
 - `FbxModelCaptureTool` の出力先を実行時のフォルダ選択ダイアログに変更。初期値はマイピクチャ(OS から実パスを取得)、前回選択したフォルダを EditorPrefs に記録して次回の初期表示に使用
+
+## [0.1.2] - 2026-07-20
+
+### Changed
+
+- `FbxModelCaptureTool` を FBX に加えて Prefab にも対応
+- `FbxModelCaptureTool` の撮影対象を「Avatar が設定された Animator」に変更し、複数ある場合はオブジェクト名ごとにすべて撮影するように変更。見つからない場合はダイアログで警告
 
 ## [0.1.1] - 2026-07-18
 
