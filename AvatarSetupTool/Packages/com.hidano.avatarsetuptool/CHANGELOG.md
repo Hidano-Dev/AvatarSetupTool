@@ -7,11 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.3.0] - 2026-07-26
+## [0.3.1] - 2026-07-26
+
+### Changed
+
+- `FbxModelCaptureTool` の GIF 画質を改善: 量子化に Floyd–Steinberg ディザリングを導入してバンディングを低減し、解像度を 512px から 1024px に変更。GIF 用の再レンダリングをやめ、PNG 用の 2048px 描画をボックス平均で縮小(2× スーパーサンプリング)して共用するように変更
+
+## [0.3.0] - 2026-07-25
 
 ### Added
 
-- `FbxModelCaptureTool` に GIF アニメーション出力を追加: 8 方向のキャプチャを 2 秒間隔で繋いだ無限ループ GIF (1024px、全身 / 顔アップの 2 本) をモデルごとに生成。PNG 用の 2048px 描画をボックス平均で縮小(2× スーパーサンプリング)し、Floyd–Steinberg ディザリング付きで量子化する。外部ツール不要の純 C# GIF89a エンコーダ `GifWriter` を同梱
+- `FbxModelCaptureTool` に GIF アニメーション出力を追加: 8 方向のキャプチャを 2 秒間隔で繋いだ無限ループ GIF (全身 / 顔アップの 2 本) をモデルごとに生成。外部ツール不要の純 C# GIF89a エンコーダ `GifWriter` を同梱
 
 ### Changed
 
