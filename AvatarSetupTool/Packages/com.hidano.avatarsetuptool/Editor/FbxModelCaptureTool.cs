@@ -21,7 +21,7 @@ namespace Hidano.AvatarSetupTool.Editor
         private const string MenuPath = "Assets/Avatar Setup Tool/Capture Model Images";
         private const string OutputDirPrefsKey = "Hidano.AvatarSetupTool.FbxModelCaptureTool.OutputDir";
         private const int ImageSize = 2048;
-        private const int GifImageSize = 512;
+        private const int GifImageSize = 1024; // ImageSize の約数にすること(縮小がボックス平均のため)
         private const int GifFrameDelayCentiseconds = 200;
         private const float FullBodyMargin = 1.05f;
         private const float FacePaddingRatio = 0.1f;
@@ -193,15 +193,13 @@ namespace Hidano.AvatarSetupTool.Editor
                             "Capture Model Images", $"{captureName}: {dirName}", shot / (float)total);
 
                         var fullSize = Mathf.Max(bounds.extents.y, bounds.extents.x) * FullBodyMargin;
-                        RenderToFile(preview, bounds.center, fullSize, bounds.extents.z,
-                            Path.Combine(outputDir, $"{captureName}_{dirName}_full.png"));
-                        fullGifFrames.Add(RenderGifFrame(preview, bounds.center, fullSize, bounds.extents.z));
+                        fullGifFrames.Add(CaptureShot(preview, bounds.center, fullSize, bounds.extents.z,
+                            Path.Combine(outputDir, $"{captureName}_{dirName}_full.png")));
                         shot++;
 
                         var (faceCenter, faceSize) = GetFaceView(animator, bounds);
-                        RenderToFile(preview, faceCenter, faceSize, bounds.extents.z,
-                            Path.Combine(outputDir, $"{captureName}_{dirName}_face.png"));
-                        faceGifFrames.Add(RenderGifFrame(preview, faceCenter, faceSize, bounds.extents.z));
+                        faceGifFrames.Add(CaptureShot(preview, faceCenter, faceSize, bounds.extents.z,
+                            Path.Combine(outputDir, $"{captureName}_{dirName}_face.png")));
                         shot++;
                     }
 
@@ -324,34 +322,59 @@ namespace Hidano.AvatarSetupTool.Editor
             Object.DestroyImmediate(texture);
         }
 
-        private static void RenderToFile(
+        /// <summary>
+        /// 1 方向分を ImageSize で描画して PNG に保存し、同じ描画結果を
+        /// GIF 用に縮小したフレームを返す(描画は 1 回で共用する)。
+        /// </summary>
+        private static Color32[] CaptureShot(
             PreviewRenderUtility preview, Vector3 center, float orthoSize, float depthExtent, string filePath)
         {
             var texture = RenderView(preview, center, orthoSize, depthExtent, ImageSize);
             File.WriteAllBytes(filePath, texture.EncodeToPNG());
+            var gifFrame = DownscaleForGif(texture);
             Object.DestroyImmediate(texture);
+            return gifFrame;
         }
 
         /// <summary>
-        /// GIF 用に低解像度で 1 フレーム描画し、トップダウン(GIF の行順)の
-        /// ピクセル配列として返す。
+        /// キャプチャ画像を GIF 解像度へボックス平均で縮小する(スーパーサンプリングを兼ねる)。
+        /// GetPixels32 は下端の行から始まるため、GIF の行順(トップダウン)への
+        /// 上下反転もここで行う。
         /// </summary>
-        private static Color32[] RenderGifFrame(
-            PreviewRenderUtility preview, Vector3 center, float orthoSize, float depthExtent)
+        private static Color32[] DownscaleForGif(Texture2D texture)
         {
-            var texture = RenderView(preview, center, orthoSize, depthExtent, GifImageSize);
-            var pixels = texture.GetPixels32();
-            Object.DestroyImmediate(texture);
-
-            // GetPixels32 は下端の行から始まるため上下を反転する
-            var flipped = new Color32[pixels.Length];
+            const int factor = ImageSize / GifImageSize;
+            const int samples = factor * factor;
+            var source = texture.GetPixels32();
+            var result = new Color32[GifImageSize * GifImageSize];
             for (var y = 0; y < GifImageSize; y++)
             {
-                System.Array.Copy(
-                    pixels, y * GifImageSize, flipped, (GifImageSize - 1 - y) * GifImageSize, GifImageSize);
+                for (var x = 0; x < GifImageSize; x++)
+                {
+                    var r = 0;
+                    var g = 0;
+                    var b = 0;
+                    for (var dy = 0; dy < factor; dy++)
+                    {
+                        var rowStart = (y * factor + dy) * ImageSize + x * factor;
+                        for (var dx = 0; dx < factor; dx++)
+                        {
+                            var p = source[rowStart + dx];
+                            r += p.r;
+                            g += p.g;
+                            b += p.b;
+                        }
+                    }
+
+                    result[(GifImageSize - 1 - y) * GifImageSize + x] = new Color32(
+                        (byte)((r + samples / 2) / samples),
+                        (byte)((g + samples / 2) / samples),
+                        (byte)((b + samples / 2) / samples),
+                        255);
+                }
             }
 
-            return flipped;
+            return result;
         }
 
         private static Texture2D RenderView(

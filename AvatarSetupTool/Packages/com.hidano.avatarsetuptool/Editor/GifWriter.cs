@@ -7,7 +7,7 @@ namespace Hidano.AvatarSetupTool.Editor
     /// <summary>
     /// 外部ライブラリを使わずに GIF89a のループアニメーションを書き出す最小エンコーダ。
     /// 各フレームを RGB555 のヒストグラムに集計し、メディアンカットで 256 色以下の
-    /// ローカルパレットへ量子化してから LZW 圧縮する。
+    /// ローカルパレットを作成、Floyd–Steinberg 誤差拡散で割り当ててから LZW 圧縮する。
     /// フレームのピクセルは上端の行から順(トップダウン)で渡すこと。
     /// </summary>
     internal static class GifWriter
@@ -62,7 +62,7 @@ namespace Hidano.AvatarSetupTool.Editor
         private static void WriteFrame(
             Stream stream, Color32[] pixels, int width, int height, int delayCentiseconds)
         {
-            var (palette, indices, paletteBits) = Quantize(pixels);
+            var (palette, indices, paletteBits) = Quantize(pixels, width, height);
 
             // Graphic Control Extension
             stream.WriteByte(0x21);
@@ -89,16 +89,14 @@ namespace Hidano.AvatarSetupTool.Editor
         /// フレームを 256 色以下に量子化し、パレット(2 の冪サイズ、RGB 連続)と
         /// 各ピクセルのパレットインデックスを返す。
         /// </summary>
-        private static (byte[] Palette, byte[] Indices, int PaletteBits) Quantize(Color32[] pixels)
+        private static (byte[] Palette, byte[] Indices, int PaletteBits) Quantize(
+            Color32[] pixels, int width, int height)
         {
             var histogram = new int[HistogramSize];
-            var pixelBins = new ushort[pixels.Length];
             for (var i = 0; i < pixels.Length; i++)
             {
                 var p = pixels[i];
-                var bin = (ushort)(((p.r >> 3) << 10) | ((p.g >> 3) << 5) | (p.b >> 3));
-                histogram[bin]++;
-                pixelBins[i] = bin;
+                histogram[((p.r >> 3) << 10) | ((p.g >> 3) << 5) | (p.b >> 3)]++;
             }
 
             var usedBins = new List<int>();
@@ -119,7 +117,6 @@ namespace Hidano.AvatarSetupTool.Editor
             }
 
             var palette = new byte[(1 << paletteBits) * 3];
-            var binToIndex = new byte[HistogramSize];
             for (var boxIndex = 0; boxIndex < boxes.Count; boxIndex++)
             {
                 long sumR = 0, sumG = 0, sumB = 0, count = 0;
@@ -130,7 +127,6 @@ namespace Hidano.AvatarSetupTool.Editor
                     sumG += Expand5((bin >> 5) & 0x1F) * weight;
                     sumB += Expand5(bin & 0x1F) * weight;
                     count += weight;
-                    binToIndex[bin] = (byte)boxIndex;
                 }
 
                 palette[boxIndex * 3] = (byte)((sumR + count / 2) / count);
@@ -138,13 +134,105 @@ namespace Hidano.AvatarSetupTool.Editor
                 palette[boxIndex * 3 + 2] = (byte)((sumB + count / 2) / count);
             }
 
+            var indices = Dither(pixels, width, height, palette, boxes.Count);
+            return (palette, indices, paletteBits);
+        }
+
+        /// <summary>
+        /// Floyd–Steinberg 誤差拡散で各ピクセルを最も近いパレット色へ割り当てる。
+        /// パレットに無い中間色を点描で擬似表現し、グラデーションのバンディングを抑える。
+        /// </summary>
+        private static byte[] Dither(Color32[] pixels, int width, int height, byte[] palette, int paletteCount)
+        {
             var indices = new byte[pixels.Length];
-            for (var i = 0; i < pixels.Length; i++)
+
+            // 最近傍パレット検索のキャッシュ(RGB555 単位で近似)
+            var nearestCache = new short[HistogramSize];
+            for (var i = 0; i < nearestCache.Length; i++)
             {
-                indices[i] = binToIndex[pixelBins[i]];
+                nearestCache[i] = -1;
             }
 
-            return (palette, indices, paletteBits);
+            // 誤差バッファは 16 倍スケール。ピクセル x はバッファの x+1 に対応させ、
+            // 両端 1 要素の余白で境界チェックを省く
+            var currentR = new int[width + 2];
+            var currentG = new int[width + 2];
+            var currentB = new int[width + 2];
+            var nextR = new int[width + 2];
+            var nextG = new int[width + 2];
+            var nextB = new int[width + 2];
+
+            for (var y = 0; y < height; y++)
+            {
+                for (var x = 0; x < width; x++)
+                {
+                    var i = y * width + x;
+                    var p = pixels[i];
+                    var r = ClampByte(p.r + ((currentR[x + 1] + 8) >> 4));
+                    var g = ClampByte(p.g + ((currentG[x + 1] + 8) >> 4));
+                    var b = ClampByte(p.b + ((currentB[x + 1] + 8) >> 4));
+
+                    var key = ((r >> 3) << 10) | ((g >> 3) << 5) | (b >> 3);
+                    var index = nearestCache[key];
+                    if (index < 0)
+                    {
+                        index = (short)FindNearest(palette, paletteCount, r, g, b);
+                        nearestCache[key] = index;
+                    }
+
+                    indices[i] = (byte)index;
+
+                    var errR = r - palette[index * 3];
+                    var errG = g - palette[index * 3 + 1];
+                    var errB = b - palette[index * 3 + 2];
+                    currentR[x + 2] += errR * 7;
+                    currentG[x + 2] += errG * 7;
+                    currentB[x + 2] += errB * 7;
+                    nextR[x] += errR * 3;
+                    nextG[x] += errG * 3;
+                    nextB[x] += errB * 3;
+                    nextR[x + 1] += errR * 5;
+                    nextG[x + 1] += errG * 5;
+                    nextB[x + 1] += errB * 5;
+                    nextR[x + 2] += errR;
+                    nextG[x + 2] += errG;
+                    nextB[x + 2] += errB;
+                }
+
+                (currentR, nextR) = (nextR, currentR);
+                (currentG, nextG) = (nextG, currentG);
+                (currentB, nextB) = (nextB, currentB);
+                System.Array.Clear(nextR, 0, nextR.Length);
+                System.Array.Clear(nextG, 0, nextG.Length);
+                System.Array.Clear(nextB, 0, nextB.Length);
+            }
+
+            return indices;
+        }
+
+        private static int FindNearest(byte[] palette, int paletteCount, int r, int g, int b)
+        {
+            var best = 0;
+            var bestDistance = int.MaxValue;
+            for (var i = 0; i < paletteCount; i++)
+            {
+                var dr = r - palette[i * 3];
+                var dg = g - palette[i * 3 + 1];
+                var db = b - palette[i * 3 + 2];
+                var distance = dr * dr + dg * dg + db * db;
+                if (distance < bestDistance)
+                {
+                    bestDistance = distance;
+                    best = i;
+                }
+            }
+
+            return best;
+        }
+
+        private static int ClampByte(int value)
+        {
+            return value < 0 ? 0 : value > 255 ? 255 : value;
         }
 
         /// <summary>

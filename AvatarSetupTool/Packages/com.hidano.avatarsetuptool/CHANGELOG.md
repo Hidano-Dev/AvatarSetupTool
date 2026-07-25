@@ -7,11 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.3.0] - 2026-07-25
+## [0.3.0] - 2026-07-26
 
 ### Added
 
-- `FbxModelCaptureTool` に GIF アニメーション出力を追加: 8 方向のキャプチャを 2 秒間隔で繋いだ無限ループ GIF (512px、全身 / 顔アップの 2 本) をモデルごとに生成。外部ツール不要の純 C# GIF89a エンコーダ `GifWriter` を同梱
+- `FbxModelCaptureTool` に GIF アニメーション出力を追加: 8 方向のキャプチャを 2 秒間隔で繋いだ無限ループ GIF (1024px、全身 / 顔アップの 2 本) をモデルごとに生成。PNG 用の 2048px 描画をボックス平均で縮小(2× スーパーサンプリング)し、Floyd–Steinberg ディザリング付きで量子化する。外部ツール不要の純 C# GIF89a エンコーダ `GifWriter` を同梱
 
 ### Changed
 
