@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-07-25
+
+### Added
+
+- `FbxModelCaptureTool` に GIF アニメーション出力を追加: 8 方向のキャプチャを 2 秒間隔で繋いだ無限ループ GIF (512px、全身 / 顔アップの 2 本) をモデルごとに生成。外部ツール不要の純 C# GIF89a エンコーダ `GifWriter` を同梱
+
+### Changed
+
+- `FbxModelCaptureTool` の出力ファイル名の方向名に番号プレフィックスを追加 (`01_front` 〜 `08_front_right`)。名前順で並べると正面から左向きに回転していく順序になるよう撮影順も変更
+
 ## [0.2.1] - 2026-07-24
 
 ### Fixed

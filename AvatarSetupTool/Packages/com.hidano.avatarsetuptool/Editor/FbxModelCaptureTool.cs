@@ -8,7 +8,8 @@ namespace Hidano.AvatarSetupTool.Editor
 {
     /// <summary>
     /// Project ウィンドウで選択した FBX / Prefab を 8 方向 × (全身 / 顔アップ) の
-    /// 計 16 枚の PNG としてキャプチャする。
+    /// 計 16 枚の PNG としてキャプチャし、あわせて全方向を 2 秒間隔で繋いだ
+    /// ループ GIF (全身 / 顔アップの 2 本) を生成する。
     /// Avatar が設定された Animator を撮影対象とし、複数ある場合は
     /// オブジェクト名ごとにすべて撮影する。見つからない場合はダイアログで警告する。
     /// カメラは並行投影・背景は白単色。
@@ -20,6 +21,8 @@ namespace Hidano.AvatarSetupTool.Editor
         private const string MenuPath = "Assets/Avatar Setup Tool/Capture Model Images";
         private const string OutputDirPrefsKey = "Hidano.AvatarSetupTool.FbxModelCaptureTool.OutputDir";
         private const int ImageSize = 2048;
+        private const int GifImageSize = 512;
+        private const int GifFrameDelayCentiseconds = 200;
         private const float FullBodyMargin = 1.05f;
         private const float FacePaddingRatio = 0.1f;
         private const float FaceFallbackHeightRatio = 0.15f;
@@ -27,17 +30,19 @@ namespace Hidano.AvatarSetupTool.Editor
         /// <summary>
         /// カメラは -Z 側に固定し、モデル側を Y 回転させて 8 方向を撮る。
         /// yaw=180 でモデルの正面がカメラを向く。
+        /// 名前の番号は、ファイル名順に並べたとき正面から左向きへ
+        /// 回転していく順序になるように振っている(GIF のフレーム順も同じ)。
         /// </summary>
         private static readonly (string Name, float Yaw)[] Directions =
         {
-            ("front", 180f),
-            ("front_right", 135f),
-            ("right", 90f),
-            ("back_right", 45f),
-            ("back", 0f),
-            ("back_left", -45f),
-            ("left", -90f),
-            ("front_left", -135f),
+            ("01_front", 180f),
+            ("02_front_left", -135f),
+            ("03_left", -90f),
+            ("04_back_left", -45f),
+            ("05_back", 0f),
+            ("06_back_right", 45f),
+            ("07_right", 90f),
+            ("08_front_right", 135f),
         };
 
         [MenuItem(MenuPath)]
@@ -177,6 +182,8 @@ namespace Hidano.AvatarSetupTool.Editor
                         renderer.enabled = renderer.transform.IsChildOf(target.transform);
                     }
 
+                    var fullGifFrames = new List<Color32[]>(Directions.Length);
+                    var faceGifFrames = new List<Color32[]>(Directions.Length);
                     foreach (var (dirName, yaw) in Directions)
                     {
                         target.transform.rotation = Quaternion.Euler(0f, yaw, 0f);
@@ -188,16 +195,26 @@ namespace Hidano.AvatarSetupTool.Editor
                         var fullSize = Mathf.Max(bounds.extents.y, bounds.extents.x) * FullBodyMargin;
                         RenderToFile(preview, bounds.center, fullSize, bounds.extents.z,
                             Path.Combine(outputDir, $"{captureName}_{dirName}_full.png"));
+                        fullGifFrames.Add(RenderGifFrame(preview, bounds.center, fullSize, bounds.extents.z));
                         shot++;
 
                         var (faceCenter, faceSize) = GetFaceView(animator, bounds);
                         RenderToFile(preview, faceCenter, faceSize, bounds.extents.z,
                             Path.Combine(outputDir, $"{captureName}_{dirName}_face.png"));
+                        faceGifFrames.Add(RenderGifFrame(preview, faceCenter, faceSize, bounds.extents.z));
                         shot++;
                     }
+
+                    EditorUtility.DisplayProgressBar(
+                        "Capture Model Images", $"{captureName}: GIF を書き出し中", shot / (float)total);
+                    GifWriter.Write(Path.Combine(outputDir, $"{captureName}_full.gif"),
+                        fullGifFrames, GifImageSize, GifImageSize, GifFrameDelayCentiseconds);
+                    GifWriter.Write(Path.Combine(outputDir, $"{captureName}_face.gif"),
+                        faceGifFrames, GifImageSize, GifImageSize, GifFrameDelayCentiseconds);
                 }
 
-                Debug.Log($"[AvatarSetupTool] {assetName}: {shot} 枚のキャプチャを保存しました: {outputDir}");
+                Debug.Log(
+                    $"[AvatarSetupTool] {assetName}: PNG {shot} 枚と GIF {targets.Length * 2} 本を保存しました: {outputDir}");
                 EditorUtility.RevealInFinder(outputDir);
                 return true;
             }
@@ -303,20 +320,42 @@ namespace Hidano.AvatarSetupTool.Editor
 
         private static void Warmup(PreviewRenderUtility preview, Bounds bounds)
         {
-            var texture = RenderView(preview, bounds.center, bounds.extents.magnitude, bounds.extents.z);
+            var texture = RenderView(preview, bounds.center, bounds.extents.magnitude, bounds.extents.z, ImageSize);
             Object.DestroyImmediate(texture);
         }
 
         private static void RenderToFile(
             PreviewRenderUtility preview, Vector3 center, float orthoSize, float depthExtent, string filePath)
         {
-            var texture = RenderView(preview, center, orthoSize, depthExtent);
+            var texture = RenderView(preview, center, orthoSize, depthExtent, ImageSize);
             File.WriteAllBytes(filePath, texture.EncodeToPNG());
             Object.DestroyImmediate(texture);
         }
 
-        private static Texture2D RenderView(
+        /// <summary>
+        /// GIF 用に低解像度で 1 フレーム描画し、トップダウン(GIF の行順)の
+        /// ピクセル配列として返す。
+        /// </summary>
+        private static Color32[] RenderGifFrame(
             PreviewRenderUtility preview, Vector3 center, float orthoSize, float depthExtent)
+        {
+            var texture = RenderView(preview, center, orthoSize, depthExtent, GifImageSize);
+            var pixels = texture.GetPixels32();
+            Object.DestroyImmediate(texture);
+
+            // GetPixels32 は下端の行から始まるため上下を反転する
+            var flipped = new Color32[pixels.Length];
+            for (var y = 0; y < GifImageSize; y++)
+            {
+                System.Array.Copy(
+                    pixels, y * GifImageSize, flipped, (GifImageSize - 1 - y) * GifImageSize, GifImageSize);
+            }
+
+            return flipped;
+        }
+
+        private static Texture2D RenderView(
+            PreviewRenderUtility preview, Vector3 center, float orthoSize, float depthExtent, int imageSize)
         {
             var camera = preview.camera;
             var distance = depthExtent + 1f;
@@ -325,7 +364,7 @@ namespace Hidano.AvatarSetupTool.Editor
             camera.nearClipPlane = 0.01f;
             camera.farClipPlane = distance + depthExtent + 1f;
 
-            preview.BeginStaticPreview(new Rect(0f, 0f, ImageSize, ImageSize));
+            preview.BeginStaticPreview(new Rect(0f, 0f, imageSize, imageSize));
             preview.Render(true);
             return preview.EndStaticPreview();
         }
