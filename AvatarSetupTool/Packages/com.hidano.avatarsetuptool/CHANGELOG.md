@@ -11,12 +11,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- `FbxModelCaptureTool` にターンテーブル MP4 出力を追加し、デフォルトの動画形式に変更: モデルを 30fps・6 秒/周で滑らかに 1 回転させた H.264 MP4 (全身 / 顔アップの 2 本) を生成。エンコードは `UnityEditor.Media.MediaEncoder` によるエディタ内完結で、Play モードや ffmpeg 等の外部ツールは不要。回転中のズーム揺れを防ぐため、1 周分を包含する固定構図(回転軸中心・水平は外接円半径)で撮影
-- 従来の GIF 出力用にメニュー「Capture Model Images (GIF)」を追加(既存の「Capture Model Images」は MP4 出力になる)
+- `FbxModelCaptureTool` にターンテーブル MP4 出力を追加: モデルを 30fps・6 秒/周で滑らかに 1 回転させた H.264 MP4 (全身 / 顔アップの 2 本) を生成。エンコードは `UnityEditor.Media.MediaEncoder` によるエディタ内完結で、Play モードや ffmpeg 等の外部ツールは不要(ビットレートモードは High を明示)
 
 ### Changed
 
-- `FbxModelCaptureTool` の GIF 用縮小処理を MP4 と共用の `Downscale` に一般化(行順の上下反転を引数で切り替え)
+- `FbxModelCaptureTool` のメニューを出力別の 3 つに分割: 「Capture Model Images (画像のみ)」「(MP4)」「(GIF)」(従来の「Capture Model Images」は廃止)
+- `FbxModelCaptureTool` の全身構図を高さ基準に変更: 頭上・足元の余白を常に一定にし、横に広いモデルは縮小せず画像のアスペクト比を横に広げて収める(高さは PNG 2048px / GIF・MP4 1024px で固定)
+- `FbxModelCaptureTool` の撮影構図をターゲットごとに 1 回だけ計算する固定構図に変更(従来は方向ごとにバウンズを再計算しており、GIF のフレーム間で構図が揺れていた)。中心は回転軸、横幅は回転掃引の外接円半径基準
+- `FbxModelCaptureTool` の GIF 用縮小処理を MP4 と共用の `Downscale` に一般化(任意サイズ対応、行順の上下反転を引数で切り替え)
 
 ## [0.3.1] - 2026-07-26
 

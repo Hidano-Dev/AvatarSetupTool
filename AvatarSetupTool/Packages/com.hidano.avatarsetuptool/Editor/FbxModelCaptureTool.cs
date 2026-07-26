@@ -8,11 +8,13 @@ namespace Hidano.AvatarSetupTool.Editor
 {
     /// <summary>
     /// Project ウィンドウで選択した FBX / Prefab を 8 方向 × (全身 / 顔アップ) の
-    /// 計 16 枚の PNG としてキャプチャし、あわせてターンテーブル動画
-    /// (全身 / 顔アップの 2 本) を生成する。
-    /// 動画はデフォルトで滑らかに 1 回転する MP4 (H.264、Play モード不要の
-    /// エディタ内エンコード)。「(GIF)」付きメニューでは従来どおり
-    /// 8 方向を 2 秒間隔で繋いだループ GIF になる。
+    /// 計 16 枚の PNG としてキャプチャし、メニューに応じてターンテーブル動画
+    /// (全身 / 顔アップの 2 本) も生成する。
+    /// - 画像のみ: PNG のみ
+    /// - MP4: 滑らかに 1 回転する H.264 MP4 (Play モード不要のエディタ内エンコード)
+    /// - GIF: 8 方向を 2 秒間隔で繋いだループ GIF
+    /// 全身は高さ基準の固定構図で、頭上・足元の余白は常に一定。
+    /// 横に広いモデルは縮小せず、画像のアスペクト比を横に広げて収める。
     /// Avatar が設定された Animator を撮影対象とし、複数ある場合は
     /// オブジェクト名ごとにすべて撮影する。見つからない場合はダイアログで警告する。
     /// カメラは並行投影・背景は白単色。
@@ -21,20 +23,25 @@ namespace Hidano.AvatarSetupTool.Editor
     /// </summary>
     public static class FbxModelCaptureTool
     {
-        private const string MenuPath = "Assets/Avatar Setup Tool/Capture Model Images";
+        private const string ImagesMenuPath = "Assets/Avatar Setup Tool/Capture Model Images (画像のみ)";
+        private const string Mp4MenuPath = "Assets/Avatar Setup Tool/Capture Model Images (MP4)";
         private const string GifMenuPath = "Assets/Avatar Setup Tool/Capture Model Images (GIF)";
         private const string OutputDirPrefsKey = "Hidano.AvatarSetupTool.FbxModelCaptureTool.OutputDir";
-        private const int ImageSize = 2048;
-        private const int AnimationImageSize = 1024; // GIF/MP4 共通。ImageSize の約数にすること(縮小がボックス平均のため)
+        private const int ImageSize = 2048; // PNG の高さ。幅はアスペクト比に応じて広がる
+        private const int AnimationImageSize = 1024; // GIF/MP4 共通の高さ。ImageSize の約数にすること(縮小がボックス平均のため)
         private const int GifFrameDelayCentiseconds = 200;
         private const int VideoFrameRate = 30;
         private const float VideoSecondsPerRotation = 6f;
         private const float FullBodyMargin = 1.05f;
+        private const float MaxFullBodyAspect = 8f; // 幅の暴走防止(2048 * 8 = 16384 が RT 上限)
         private const float FacePaddingRatio = 0.1f;
         private const float FaceFallbackHeightRatio = 0.15f;
 
-        private enum AnimationFormat
+        private const int SuperSampleFactor = ImageSize / AnimationImageSize;
+
+        private enum OutputFormat
         {
+            ImagesOnly,
             Mp4,
             Gif,
         }
@@ -59,19 +66,48 @@ namespace Hidano.AvatarSetupTool.Editor
             ("08_front_right", 135f),
         };
 
-        [MenuItem(MenuPath)]
+        /// <summary>
+        /// ターゲット 1 体分の固定構図。8 方向の静止画とターンテーブル動画のすべてで共用する。
+        /// </summary>
+        private readonly struct ViewSpec
+        {
+            public ViewSpec(Vector3 center, float orthoSize, float depthExtent, int animWidth, int animHeight)
+            {
+                Center = center;
+                OrthoSize = orthoSize;
+                DepthExtent = depthExtent;
+                AnimWidth = animWidth;
+                AnimHeight = animHeight;
+            }
+
+            public Vector3 Center { get; }
+            public float OrthoSize { get; }
+            public float DepthExtent { get; }
+            public int AnimWidth { get; }
+            public int AnimHeight { get; }
+            public int RenderWidth => AnimWidth * SuperSampleFactor;
+            public int RenderHeight => AnimHeight * SuperSampleFactor;
+        }
+
+        [MenuItem(ImagesMenuPath, false, 1000)]
+        private static void CaptureImagesOnly()
+        {
+            Capture(OutputFormat.ImagesOnly);
+        }
+
+        [MenuItem(Mp4MenuPath, false, 1001)]
         private static void CaptureAsMp4()
         {
-            Capture(AnimationFormat.Mp4);
+            Capture(OutputFormat.Mp4);
         }
 
-        [MenuItem(GifMenuPath)]
+        [MenuItem(GifMenuPath, false, 1002)]
         private static void CaptureAsGif()
         {
-            Capture(AnimationFormat.Gif);
+            Capture(OutputFormat.Gif);
         }
 
-        private static void Capture(AnimationFormat format)
+        private static void Capture(OutputFormat format)
         {
             var outputRoot = SelectOutputRoot();
             if (string.IsNullOrEmpty(outputRoot))
@@ -99,7 +135,8 @@ namespace Hidano.AvatarSetupTool.Editor
             }
         }
 
-        [MenuItem(MenuPath, true)]
+        [MenuItem(ImagesMenuPath, true)]
+        [MenuItem(Mp4MenuPath, true)]
         [MenuItem(GifMenuPath, true)]
         private static bool ValidateCapture()
         {
@@ -160,7 +197,7 @@ namespace Hidano.AvatarSetupTool.Editor
         /// アセット内の Avatar 付き Animator をすべて撮影する。
         /// Avatar 付き Animator が 1 つも見つからなければ false を返す(撮影は行わない)。
         /// </summary>
-        private static bool CaptureAsset(string assetPath, string outputRoot, AnimationFormat format)
+        private static bool CaptureAsset(string assetPath, string outputRoot, OutputFormat format)
         {
             var prefab = AssetDatabase.LoadMainAssetAtPath(assetPath) as GameObject;
             if (prefab == null)
@@ -196,7 +233,7 @@ namespace Hidano.AvatarSetupTool.Editor
 
                 var usedNames = new HashSet<string>();
                 var stepsPerTarget = Directions.Length * 2
-                    + (format == AnimationFormat.Mp4 ? VideoFrameCount * 2 : 0);
+                    + (format == OutputFormat.Mp4 ? VideoFrameCount * 2 : 0);
                 var total = targets.Length * stepsPerTarget;
                 var step = 0;
                 foreach (var animator in targets)
@@ -210,24 +247,23 @@ namespace Hidano.AvatarSetupTool.Editor
                         renderer.enabled = renderer.transform.IsChildOf(target.transform);
                     }
 
+                    var (fullView, faceView) = ComputeViews(animator, target);
+
                     var fullGifFrames = new List<Color32[]>(Directions.Length);
                     var faceGifFrames = new List<Color32[]>(Directions.Length);
                     foreach (var (dirName, yaw) in Directions)
                     {
                         target.transform.rotation = Quaternion.Euler(0f, yaw, 0f);
-                        var bounds = CalculateBounds(target);
 
                         EditorUtility.DisplayProgressBar(
                             "Capture Model Images", $"{captureName}: {dirName}", step / (float)total);
 
-                        var makeGifFrame = format == AnimationFormat.Gif;
-                        var fullSize = Mathf.Max(bounds.extents.y, bounds.extents.x) * FullBodyMargin;
-                        var fullFrame = CaptureShot(preview, bounds.center, fullSize, bounds.extents.z,
+                        var makeGifFrame = format == OutputFormat.Gif;
+                        var fullFrame = CaptureShot(preview, fullView,
                             Path.Combine(outputDir, $"{captureName}_{dirName}_full.png"), makeGifFrame);
                         step++;
 
-                        var (faceCenter, faceSize) = GetFaceView(animator, bounds);
-                        var faceFrame = CaptureShot(preview, faceCenter, faceSize, bounds.extents.z,
+                        var faceFrame = CaptureShot(preview, faceView,
                             Path.Combine(outputDir, $"{captureName}_{dirName}_face.png"), makeGifFrame);
                         step++;
 
@@ -238,26 +274,30 @@ namespace Hidano.AvatarSetupTool.Editor
                         }
                     }
 
-                    if (format == AnimationFormat.Gif)
+                    if (format == OutputFormat.Gif)
                     {
                         EditorUtility.DisplayProgressBar(
                             "Capture Model Images", $"{captureName}: GIF を書き出し中", step / (float)total);
                         GifWriter.Write(Path.Combine(outputDir, $"{captureName}_full.gif"),
-                            fullGifFrames, AnimationImageSize, AnimationImageSize, GifFrameDelayCentiseconds);
+                            fullGifFrames, fullView.AnimWidth, fullView.AnimHeight, GifFrameDelayCentiseconds);
                         GifWriter.Write(Path.Combine(outputDir, $"{captureName}_face.gif"),
-                            faceGifFrames, AnimationImageSize, AnimationImageSize, GifFrameDelayCentiseconds);
+                            faceGifFrames, faceView.AnimWidth, faceView.AnimHeight, GifFrameDelayCentiseconds);
                     }
-                    else
+                    else if (format == OutputFormat.Mp4)
                     {
                         CaptureTurntableVideos(
-                            preview, animator, target, outputDir, captureName, total, ref step);
+                            preview, target, fullView, faceView, outputDir, captureName, total, ref step);
                     }
                 }
 
-                var animationLabel = format == AnimationFormat.Gif ? "GIF" : "MP4";
                 var pngCount = targets.Length * Directions.Length * 2;
-                Debug.Log(
-                    $"[AvatarSetupTool] {assetName}: PNG {pngCount} 枚と {animationLabel} {targets.Length * 2} 本を保存しました: {outputDir}");
+                var summary = format switch
+                {
+                    OutputFormat.Mp4 => $"PNG {pngCount} 枚と MP4 {targets.Length * 2} 本",
+                    OutputFormat.Gif => $"PNG {pngCount} 枚と GIF {targets.Length * 2} 本",
+                    _ => $"PNG {pngCount} 枚",
+                };
+                Debug.Log($"[AvatarSetupTool] {assetName}: {summary}を保存しました: {outputDir}");
                 EditorUtility.RevealInFinder(outputDir);
                 return true;
             }
@@ -323,6 +363,53 @@ namespace Hidano.AvatarSetupTool.Editor
         }
 
         /// <summary>
+        /// ターゲット 1 体分の撮影構図(全身 / 顔アップ)を求める。
+        /// 方向ごとにバウンズを取り直すと構図が揺れて GIF/MP4 のフレーム間で
+        /// ジッターになるため、正面向きのバウンズと回転掃引半径から
+        /// 全方向共通の固定構図を作る。
+        /// 全身は高さ基準(頭上・足元の余白が常に一定)で、横に広いモデルは
+        /// 縮小せず画像のアスペクト比を横に広げて収める。高さの解像度は常に固定。
+        /// </summary>
+        private static (ViewSpec Full, ViewSpec Face) ComputeViews(Animator animator, GameObject target)
+        {
+            target.transform.rotation = Quaternion.Euler(0f, Directions[0].Yaw, 0f);
+            var bounds = CalculateBounds(target);
+            var axis = target.transform.position;
+            var radius = HorizontalRadiusAroundAxis(bounds, axis);
+
+            var fullOrtho = Mathf.Max(bounds.extents.y, 0.001f) * FullBodyMargin;
+            var aspect = Mathf.Clamp(radius * FullBodyMargin / fullOrtho, 1f, MaxFullBodyAspect);
+            var animWidth = ToEven(Mathf.RoundToInt(AnimationImageSize * aspect));
+            var full = new ViewSpec(
+                new Vector3(axis.x, bounds.center.y, axis.z), fullOrtho, radius,
+                animWidth, AnimationImageSize);
+
+            var (faceCenter, faceSize) = GetFaceView(animator, bounds);
+            var face = new ViewSpec(
+                new Vector3(axis.x, faceCenter.y, axis.z), faceSize, radius,
+                AnimationImageSize, AnimationImageSize);
+
+            return (full, face);
+        }
+
+        /// <summary>H.264 は解像度が偶数である必要があるため、最も近い偶数へ切り上げる。</summary>
+        private static int ToEven(int value)
+        {
+            return (value + 1) / 2 * 2;
+        }
+
+        /// <summary>
+        /// Y 軸回転でバウンズが水平方向に掃く範囲の半径(回転軸からの最大距離)。
+        /// 回転中のどの向きでもモデルが画面と近クリップ面に収まるサイズの根拠になる。
+        /// </summary>
+        private static float HorizontalRadiusAroundAxis(Bounds bounds, Vector3 axis)
+        {
+            var dx = Mathf.Max(Mathf.Abs(bounds.min.x - axis.x), Mathf.Abs(bounds.max.x - axis.x));
+            var dz = Mathf.Max(Mathf.Abs(bounds.min.z - axis.z), Mathf.Abs(bounds.max.z - axis.z));
+            return Mathf.Sqrt(dx * dx + dz * dz);
+        }
+
+        /// <summary>
         /// 顔アップの構図を求める。
         /// 首(Neck)ジョイントを画像中心に置き、頭頂のメッシュ(バウンズ上端)が
         /// 画像上端から高さの <see cref="FacePaddingRatio"/> 分の余白に収まるサイズを返す。
@@ -363,34 +450,24 @@ namespace Hidano.AvatarSetupTool.Editor
 
         private static void Warmup(PreviewRenderUtility preview, Bounds bounds)
         {
-            var texture = RenderView(preview, bounds.center, bounds.extents.magnitude, bounds.extents.z, ImageSize);
+            var texture = RenderView(
+                preview, bounds.center, bounds.extents.magnitude, bounds.extents.z, ImageSize, ImageSize);
             Object.DestroyImmediate(texture);
         }
 
         /// <summary>
         /// モデルを連続回転させながら全身 / 顔アップのターンテーブル MP4 を書き出す。
-        /// フレームごとにバウンズを取り直すとズームが揺れて見えるため、
-        /// 1 周分を包含する固定構図(回転軸中心・水平は外接円半径)で撮影する。
+        /// 構図は ComputeViews が返した固定構図をそのまま使う。
         /// </summary>
         private static void CaptureTurntableVideos(
-            PreviewRenderUtility preview, Animator animator, GameObject target,
+            PreviewRenderUtility preview, GameObject target, ViewSpec fullView, ViewSpec faceView,
             string outputDir, string captureName, int total, ref int step)
         {
             var frameCount = VideoFrameCount;
-            target.transform.rotation = Quaternion.Euler(0f, Directions[0].Yaw, 0f);
-            var bounds = CalculateBounds(target);
-            var axis = target.transform.position;
-            var radius = HorizontalRadiusAroundAxis(bounds, axis);
-
-            var fullCenter = new Vector3(axis.x, bounds.center.y, axis.z);
-            var fullSize = Mathf.Max(bounds.extents.y, radius) * FullBodyMargin;
-            var (faceViewCenter, faceSize) = GetFaceView(animator, bounds);
-            var faceCenter = new Vector3(axis.x, faceViewCenter.y, axis.z);
-
             using (var fullWriter = new Mp4Writer(Path.Combine(outputDir, $"{captureName}_full.mp4"),
-                AnimationImageSize, AnimationImageSize, VideoFrameRate))
+                fullView.AnimWidth, fullView.AnimHeight, VideoFrameRate))
             using (var faceWriter = new Mp4Writer(Path.Combine(outputDir, $"{captureName}_face.mp4"),
-                AnimationImageSize, AnimationImageSize, VideoFrameRate))
+                faceView.AnimWidth, faceView.AnimHeight, VideoFrameRate))
             {
                 for (var i = 0; i < frameCount; i++)
                 {
@@ -401,44 +478,31 @@ namespace Hidano.AvatarSetupTool.Editor
                     var yaw = Directions[0].Yaw + 360f * i / frameCount;
                     target.transform.rotation = Quaternion.Euler(0f, yaw, 0f);
 
-                    AddVideoFrame(preview, fullWriter, fullCenter, fullSize, radius);
+                    AddVideoFrame(preview, fullWriter, fullView);
                     step++;
-                    AddVideoFrame(preview, faceWriter, faceCenter, faceSize, radius);
+                    AddVideoFrame(preview, faceWriter, faceView);
                     step++;
                 }
             }
         }
 
-        private static void AddVideoFrame(
-            PreviewRenderUtility preview, Mp4Writer writer, Vector3 center, float orthoSize, float depthExtent)
+        private static void AddVideoFrame(PreviewRenderUtility preview, Mp4Writer writer, ViewSpec view)
         {
-            var texture = RenderView(preview, center, orthoSize, depthExtent, ImageSize);
-            writer.AddFrame(Downscale(texture, topDown: false));
+            var texture = RenderView(preview, view);
+            writer.AddFrame(Downscale(texture, view.AnimWidth, view.AnimHeight, topDown: false));
             Object.DestroyImmediate(texture);
         }
 
         /// <summary>
-        /// Y 軸回転でバウンズが水平方向に掃く範囲の半径(回転軸からの最大距離)。
-        /// 回転中のどの向きでもモデルが画面と近クリップ面に収まるサイズの根拠になる。
-        /// </summary>
-        private static float HorizontalRadiusAroundAxis(Bounds bounds, Vector3 axis)
-        {
-            var dx = Mathf.Max(Mathf.Abs(bounds.min.x - axis.x), Mathf.Abs(bounds.max.x - axis.x));
-            var dz = Mathf.Max(Mathf.Abs(bounds.min.z - axis.z), Mathf.Abs(bounds.max.z - axis.z));
-            return Mathf.Sqrt(dx * dx + dz * dz);
-        }
-
-        /// <summary>
-        /// 1 方向分を ImageSize で描画して PNG に保存し、makeGifFrame が真なら
+        /// 1 方向分を高解像度で描画して PNG に保存し、makeGifFrame が真なら
         /// 同じ描画結果を GIF 用に縮小したフレームを返す(描画は 1 回で共用する)。
         /// </summary>
         private static Color32[] CaptureShot(
-            PreviewRenderUtility preview, Vector3 center, float orthoSize, float depthExtent,
-            string filePath, bool makeGifFrame)
+            PreviewRenderUtility preview, ViewSpec view, string filePath, bool makeGifFrame)
         {
-            var texture = RenderView(preview, center, orthoSize, depthExtent, ImageSize);
+            var texture = RenderView(preview, view);
             File.WriteAllBytes(filePath, texture.EncodeToPNG());
-            var gifFrame = makeGifFrame ? Downscale(texture, topDown: true) : null;
+            var gifFrame = makeGifFrame ? Downscale(texture, view.AnimWidth, view.AnimHeight, topDown: true) : null;
             Object.DestroyImmediate(texture);
             return gifFrame;
         }
@@ -448,23 +512,24 @@ namespace Hidano.AvatarSetupTool.Editor
         /// GetPixels32 は下端の行から始まる(ボトムアップ)。GIF はトップダウンの行順が
         /// 必要なため topDown 指定で上下反転し、MP4 (SetPixels32) はそのままの行順で返す。
         /// </summary>
-        private static Color32[] Downscale(Texture2D texture, bool topDown)
+        private static Color32[] Downscale(Texture2D texture, int destWidth, int destHeight, bool topDown)
         {
-            const int factor = ImageSize / AnimationImageSize;
+            const int factor = SuperSampleFactor;
             const int samples = factor * factor;
+            var sourceWidth = texture.width;
             var source = texture.GetPixels32();
-            var result = new Color32[AnimationImageSize * AnimationImageSize];
-            for (var y = 0; y < AnimationImageSize; y++)
+            var result = new Color32[destWidth * destHeight];
+            for (var y = 0; y < destHeight; y++)
             {
-                var destY = topDown ? AnimationImageSize - 1 - y : y;
-                for (var x = 0; x < AnimationImageSize; x++)
+                var destY = topDown ? destHeight - 1 - y : y;
+                for (var x = 0; x < destWidth; x++)
                 {
                     var r = 0;
                     var g = 0;
                     var b = 0;
                     for (var dy = 0; dy < factor; dy++)
                     {
-                        var rowStart = (y * factor + dy) * ImageSize + x * factor;
+                        var rowStart = (y * factor + dy) * sourceWidth + x * factor;
                         for (var dx = 0; dx < factor; dx++)
                         {
                             var p = source[rowStart + dx];
@@ -474,7 +539,7 @@ namespace Hidano.AvatarSetupTool.Editor
                         }
                     }
 
-                    result[destY * AnimationImageSize + x] = new Color32(
+                    result[destY * destWidth + x] = new Color32(
                         (byte)((r + samples / 2) / samples),
                         (byte)((g + samples / 2) / samples),
                         (byte)((b + samples / 2) / samples),
@@ -485,17 +550,25 @@ namespace Hidano.AvatarSetupTool.Editor
             return result;
         }
 
+        private static Texture2D RenderView(PreviewRenderUtility preview, ViewSpec view)
+        {
+            return RenderView(
+                preview, view.Center, view.OrthoSize, view.DepthExtent, view.RenderWidth, view.RenderHeight);
+        }
+
         private static Texture2D RenderView(
-            PreviewRenderUtility preview, Vector3 center, float orthoSize, float depthExtent, int imageSize)
+            PreviewRenderUtility preview, Vector3 center, float orthoSize, float depthExtent,
+            int imageWidth, int imageHeight)
         {
             var camera = preview.camera;
             var distance = depthExtent + 1f;
             camera.orthographicSize = orthoSize;
+            camera.aspect = imageWidth / (float)imageHeight;
             camera.transform.SetPositionAndRotation(center + Vector3.back * distance, Quaternion.identity);
             camera.nearClipPlane = 0.01f;
             camera.farClipPlane = distance + depthExtent + 1f;
 
-            preview.BeginStaticPreview(new Rect(0f, 0f, imageSize, imageSize));
+            preview.BeginStaticPreview(new Rect(0f, 0f, imageWidth, imageHeight));
             preview.Render(true);
             return preview.EndStaticPreview();
         }
