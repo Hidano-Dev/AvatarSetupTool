@@ -5,12 +5,21 @@ using UnityEngine;
 namespace Hidano.AvatarSetupTool.Editor
 {
     /// <summary>
+    /// ターンテーブル動画のフレームを 1 枚ずつ受け取るライターの共通インターフェース。
+    /// ピクセルは Texture2D.SetPixels32 と同じボトムアップの行順で渡すこと。
+    /// </summary>
+    internal interface IVideoFrameWriter : IDisposable
+    {
+        void AddFrame(Color32[] pixels);
+    }
+
+    /// <summary>
     /// UnityEditor.Media.MediaEncoder で H.264 の MP4 を書き出す薄いラッパー。
     /// エディタの編集モード内で完結し、Play モードや外部ツール(ffmpeg 等)は不要。
     /// フレームは AddFrame へ 1 枚ずつ渡して逐次エンコードする(全フレームをメモリに溜めない)。
     /// ピクセルは Texture2D.SetPixels32 と同じボトムアップの行順で渡すこと。
     /// </summary>
-    internal sealed class Mp4Writer : IDisposable
+    internal sealed class Mp4Writer : IVideoFrameWriter
     {
         private readonly MediaEncoder encoder;
         private readonly Texture2D frameTexture;

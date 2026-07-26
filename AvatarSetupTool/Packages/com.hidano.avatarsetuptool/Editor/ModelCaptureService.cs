@@ -19,8 +19,8 @@ namespace Hidano.AvatarSetupTool.Editor
     }
 
     /// <summary>
-    /// モデルを 8 方向 × (全身 / 顔アップ) の PNG としてキャプチャし、設定に応じて
-    /// ターンテーブル動画 (MP4 / GIF) も生成するロジック層。
+    /// モデルを 8 方向 × 撮影範囲 (全身 / 顔アップ / 両方) の PNG としてキャプチャし、
+    /// 設定に応じてターンテーブル動画 (MP4 / GIF / ProRes 422) も生成するロジック層。
     /// UI (EditorWindow・ダイアログ・プログレスバー) には依存せず、
     /// <see cref="Capture"/> を直接呼べば CLI (-executeMethod 等) からも実行できる。
     ///
@@ -133,7 +133,7 @@ namespace Hidano.AvatarSetupTool.Editor
                     views[i] = ComputeViews(targets[i], targets[i].gameObject, animHeight);
                 }
 
-                var memoryError = ValidateMemory(views, settings.format);
+                var memoryError = ValidateMemory(views, settings);
                 if (memoryError != null)
                 {
                     return CaptureResult.Fail(memoryError);
@@ -148,13 +148,17 @@ namespace Hidano.AvatarSetupTool.Editor
                 Warmup(preview, CalculateBounds(instance));
 
                 var timestamp = DateTime.Now;
-                var stillPattern = EffectivePattern(settings.fileNamePattern, targets.Length > 1, forStill: true);
-                var videoPattern = EffectivePattern(settings.fileNamePattern, targets.Length > 1, forStill: false);
+                var bothViews = settings.viewMode == CaptureViewMode.Both;
+                var stillPattern = EffectivePattern(
+                    settings.fileNamePattern, targets.Length > 1, forStill: true, bothViews: bothViews);
+                var videoPattern = EffectivePattern(
+                    settings.fileNamePattern, targets.Length > 1, forStill: false, bothViews: bothViews);
 
+                var isVideo = settings.format == CaptureOutputFormat.Mp4
+                    || settings.format == CaptureOutputFormat.ProRes422;
                 var usedNames = new HashSet<string>();
                 var videoFrameCount = Mathf.RoundToInt(VideoFrameRate * settings.SecondsPerRotation);
-                var stepsPerTarget = Directions.Length * 2
-                    + (settings.format == CaptureOutputFormat.Mp4 ? videoFrameCount * 2 : 0);
+                var stepsPerTarget = (Directions.Length + (isVideo ? videoFrameCount : 0)) * settings.ViewCount;
                 var total = targets.Length * stepsPerTarget;
                 var step = 0;
                 for (var t = 0; t < targets.Length; t++)
@@ -188,57 +192,81 @@ namespace Hidano.AvatarSetupTool.Editor
 
                             var makeGifFrame = settings.format == CaptureOutputFormat.Gif;
 
-                            backdrop.Show(showFull: true);
-                            var fullName = ResolveName(stillPattern, dirName, "full",
-                                fullView.RenderWidth, fullView.RenderHeight);
-                            var fullFrame = CaptureShot(preview, fullView,
-                                Path.Combine(outputDir, fullName + ".png"), makeGifFrame);
-                            step++;
-
-                            backdrop.Show(showFull: false);
-                            var faceName = ResolveName(stillPattern, dirName, "face",
-                                faceView.RenderWidth, faceView.RenderHeight);
-                            var faceFrame = CaptureShot(preview, faceView,
-                                Path.Combine(outputDir, faceName + ".png"), makeGifFrame);
-                            step++;
-
-                            if (makeGifFrame)
+                            if (settings.CaptureFull)
                             {
-                                fullGifFrames.Add(fullFrame);
-                                faceGifFrames.Add(faceFrame);
+                                backdrop.Show(showFull: true);
+                                var fullName = ResolveName(stillPattern, dirName, "full",
+                                    fullView.RenderWidth, fullView.RenderHeight);
+                                var fullFrame = CaptureShot(preview, fullView,
+                                    Path.Combine(outputDir, fullName + ".png"), makeGifFrame);
+                                step++;
+                                if (makeGifFrame)
+                                {
+                                    fullGifFrames.Add(fullFrame);
+                                }
+                            }
+
+                            if (settings.CaptureFace)
+                            {
+                                backdrop.Show(showFull: false);
+                                var faceName = ResolveName(stillPattern, dirName, "face",
+                                    faceView.RenderWidth, faceView.RenderHeight);
+                                var faceFrame = CaptureShot(preview, faceView,
+                                    Path.Combine(outputDir, faceName + ".png"), makeGifFrame);
+                                step++;
+                                if (makeGifFrame)
+                                {
+                                    faceGifFrames.Add(faceFrame);
+                                }
                             }
                         }
 
                         if (settings.format == CaptureOutputFormat.Gif)
                         {
                             progress?.Invoke($"{captureName}: GIF を書き出し中", step / (float)total);
-                            GifWriter.Write(
-                                Path.Combine(outputDir, ResolveName(videoPattern, null, "full",
-                                    fullView.AnimWidth, fullView.AnimHeight) + ".gif"),
-                                fullGifFrames, fullView.AnimWidth, fullView.AnimHeight, GifFrameDelayCentiseconds);
-                            GifWriter.Write(
-                                Path.Combine(outputDir, ResolveName(videoPattern, null, "face",
-                                    faceView.AnimWidth, faceView.AnimHeight) + ".gif"),
-                                faceGifFrames, faceView.AnimWidth, faceView.AnimHeight, GifFrameDelayCentiseconds);
+                            if (settings.CaptureFull)
+                            {
+                                GifWriter.Write(
+                                    Path.Combine(outputDir, ResolveName(videoPattern, null, "full",
+                                        fullView.AnimWidth, fullView.AnimHeight) + ".gif"),
+                                    fullGifFrames, fullView.AnimWidth, fullView.AnimHeight,
+                                    GifFrameDelayCentiseconds);
+                            }
+
+                            if (settings.CaptureFace)
+                            {
+                                GifWriter.Write(
+                                    Path.Combine(outputDir, ResolveName(videoPattern, null, "face",
+                                        faceView.AnimWidth, faceView.AnimHeight) + ".gif"),
+                                    faceGifFrames, faceView.AnimWidth, faceView.AnimHeight,
+                                    GifFrameDelayCentiseconds);
+                            }
                         }
-                        else if (settings.format == CaptureOutputFormat.Mp4)
+                        else if (isVideo)
                         {
-                            var fullPath = Path.Combine(outputDir, ResolveName(videoPattern, null, "full",
-                                fullView.AnimWidth, fullView.AnimHeight) + ".mp4");
-                            var facePath = Path.Combine(outputDir, ResolveName(videoPattern, null, "face",
-                                faceView.AnimWidth, faceView.AnimHeight) + ".mp4");
+                            var extension = settings.format == CaptureOutputFormat.Mp4 ? ".mp4" : ".mov";
+                            var fullPath = settings.CaptureFull
+                                ? Path.Combine(outputDir, ResolveName(videoPattern, null, "full",
+                                    fullView.AnimWidth, fullView.AnimHeight) + extension)
+                                : null;
+                            var facePath = settings.CaptureFace
+                                ? Path.Combine(outputDir, ResolveName(videoPattern, null, "face",
+                                    faceView.AnimWidth, faceView.AnimHeight) + extension)
+                                : null;
                             CaptureTurntableVideos(
-                                preview, target, backdrop, fullView, faceView, fullPath, facePath,
-                                captureName, videoFrameCount, total, progress, ref step);
+                                preview, target, backdrop, fullView, faceView, settings.format,
+                                fullPath, facePath, captureName, videoFrameCount, total, progress, ref step);
                         }
                     }
                 }
 
-                var pngCount = targets.Length * Directions.Length * 2;
+                var pngCount = targets.Length * Directions.Length * settings.ViewCount;
+                var videoCount = targets.Length * settings.ViewCount;
                 var summary = settings.format switch
                 {
-                    CaptureOutputFormat.Mp4 => $"PNG {pngCount} 枚と MP4 {targets.Length * 2} 本",
-                    CaptureOutputFormat.Gif => $"PNG {pngCount} 枚と GIF {targets.Length * 2} 本",
+                    CaptureOutputFormat.Mp4 => $"PNG {pngCount} 枚と MP4 {videoCount} 本",
+                    CaptureOutputFormat.Gif => $"PNG {pngCount} 枚と GIF {videoCount} 本",
+                    CaptureOutputFormat.ProRes422 => $"PNG {pngCount} 枚と ProRes MOV {videoCount} 本",
                     _ => $"PNG {pngCount} 枚",
                 };
                 Debug.Log($"[AvatarSetupTool] {modelName}: {summary}を保存しました: {outputDir}");
@@ -253,21 +281,25 @@ namespace Hidano.AvatarSetupTool.Editor
         /// <summary>
         /// UI 表示用のメモリ使用量見積もり (バイト)。モデルのアスペクト比が判明する前の
         /// 概算のため正方形を仮定する。実行時には実際の構図で再検証される。
+        /// GIF は全フレームを保持してから書き出すため、フレームを 1 枚ずつ逐次エンコードする
+        /// MP4 / ProRes より見積もりが大きくなる (これは仕様)。
         /// </summary>
-        public static long EstimateRequiredBytes(int imageSize, CaptureOutputFormat format)
+        public static long EstimateRequiredBytes(int imageSize, CaptureOutputFormat format, CaptureViewMode viewMode)
         {
+            var viewCount = viewMode == CaptureViewMode.Both ? 2 : 1;
             var renderPixels = (long)imageSize * imageSize;
             // RT + 読み戻し Texture2D + GetPixels32 + PNG エンコードバッファ
             var bytes = renderPixels * 4 * 4;
             var animPixels = renderPixels / (SuperSampleFactor * SuperSampleFactor);
             if (format == CaptureOutputFormat.Gif)
             {
-                // 全身 + 顔の 8 フレームずつを保持し、量子化でさらに数フレーム分使う
-                bytes += animPixels * 4 * (Directions.Length * 2 + 4);
+                // 構図ごとに 8 フレームを保持し、量子化でさらに数フレーム分使う
+                bytes += animPixels * 4 * (Directions.Length + 2) * viewCount;
             }
-            else if (format == CaptureOutputFormat.Mp4)
+            else if (format == CaptureOutputFormat.Mp4 || format == CaptureOutputFormat.ProRes422)
             {
-                bytes += animPixels * 4 * 2;
+                // 逐次エンコードのため縮小済みフレーム 1 枚分のバッファのみ
+                bytes += animPixels * 4 * viewCount;
             }
 
             return bytes;
@@ -278,8 +310,9 @@ namespace Hidano.AvatarSetupTool.Editor
 
         /// <summary>
         /// ワイルドカードの不足でファイル名が衝突しないよう、必要なトークンを補ったパターンを返す。
+        /// &lt;View&gt; は全身と顔アップの両方を撮る場合のみ補完する (片方だけなら衝突しない)。
         /// </summary>
-        private static string EffectivePattern(string pattern, bool multipleTargets, bool forStill)
+        internal static string EffectivePattern(string pattern, bool multipleTargets, bool forStill, bool bothViews)
         {
             if (string.IsNullOrWhiteSpace(pattern))
             {
@@ -291,7 +324,7 @@ namespace Hidano.AvatarSetupTool.Editor
                 pattern = "<Target>_" + pattern;
             }
 
-            if (!pattern.Contains("<View>"))
+            if (bothViews && !pattern.Contains("<View>"))
             {
                 pattern += "_<View>";
             }
@@ -346,15 +379,25 @@ namespace Hidano.AvatarSetupTool.Editor
         /// GPU のテクスチャ上限と、処理中に確保するメモリの見積もりを検証する。
         /// 問題があればエラーメッセージを、無ければ null を返す。
         /// </summary>
-        private static string ValidateMemory((ViewSpec Full, ViewSpec Face)[] views, CaptureOutputFormat format)
+        private static string ValidateMemory((ViewSpec Full, ViewSpec Face)[] views, CaptureSettings settings)
         {
             var maxTextureSize = SystemInfo.maxTextureSize;
             long peak = 0;
             long gifAccumulated = 0;
             foreach (var (full, face) in views)
             {
-                foreach (var view in new[] { full, face })
+                long animPixels = 0;
+                foreach (var (view, capture) in new[]
                 {
+                    (full, settings.CaptureFull),
+                    (face, settings.CaptureFace),
+                })
+                {
+                    if (!capture)
+                    {
+                        continue;
+                    }
+
                     if (view.RenderWidth > maxTextureSize || view.RenderHeight > maxTextureSize)
                     {
                         return $"レンダリング解像度 {view.RenderWidth}x{view.RenderHeight} が"
@@ -364,12 +407,11 @@ namespace Hidano.AvatarSetupTool.Editor
 
                     var renderPixels = (long)view.RenderWidth * view.RenderHeight;
                     peak = Math.Max(peak, renderPixels * 4 * 4);
+                    animPixels += (long)view.AnimWidth * view.AnimHeight;
                 }
 
-                if (format == CaptureOutputFormat.Gif)
+                if (settings.format == CaptureOutputFormat.Gif)
                 {
-                    var animPixels = (long)full.AnimWidth * full.AnimHeight
-                        + (long)face.AnimWidth * face.AnimHeight;
                     gifAccumulated = Math.Max(gifAccumulated, animPixels * 4 * (Directions.Length + 2));
                 }
             }
@@ -681,37 +723,51 @@ namespace Hidano.AvatarSetupTool.Editor
         }
 
         /// <summary>
-        /// モデルを連続回転させながら全身 / 顔アップのターンテーブル MP4 を書き出す。
-        /// 構図は ComputeViews が返した固定構図をそのまま使う。
+        /// モデルを連続回転させながらターンテーブル動画 (MP4 / ProRes MOV) を書き出す。
+        /// 構図は ComputeViews が返した固定構図をそのまま使う。パスが null の構図はスキップする。
         /// </summary>
         private static void CaptureTurntableVideos(
             PreviewRenderUtility preview, GameObject target, GridBackdrop backdrop,
-            ViewSpec fullView, ViewSpec faceView, string fullPath, string facePath,
+            ViewSpec fullView, ViewSpec faceView, CaptureOutputFormat format, string fullPath, string facePath,
             string captureName, int frameCount, int total, Action<string, float> progress, ref int step)
         {
-            using (var fullWriter = new Mp4Writer(fullPath, fullView.AnimWidth, fullView.AnimHeight, VideoFrameRate))
-            using (var faceWriter = new Mp4Writer(facePath, faceView.AnimWidth, faceView.AnimHeight, VideoFrameRate))
+            var label = format == CaptureOutputFormat.Mp4 ? "MP4" : "ProRes";
+            using (var fullWriter = fullPath == null ? null : CreateVideoWriter(format, fullPath, fullView))
+            using (var faceWriter = facePath == null ? null : CreateVideoWriter(format, facePath, faceView))
             {
                 for (var i = 0; i < frameCount; i++)
                 {
-                    progress?.Invoke($"{captureName}: MP4 {i + 1}/{frameCount}", step / (float)total);
+                    progress?.Invoke($"{captureName}: {label} {i + 1}/{frameCount}", step / (float)total);
 
                     // PNG/GIF と同じく、正面から左向きへ回転する向き (ヨー角の増加方向)
                     var yaw = Directions[0].Yaw + 360f * i / frameCount;
                     target.transform.rotation = Quaternion.Euler(0f, yaw, 0f);
 
-                    backdrop.Show(showFull: true);
-                    AddVideoFrame(preview, fullWriter, fullView);
-                    step++;
+                    if (fullWriter != null)
+                    {
+                        backdrop.Show(showFull: true);
+                        AddVideoFrame(preview, fullWriter, fullView);
+                        step++;
+                    }
 
-                    backdrop.Show(showFull: false);
-                    AddVideoFrame(preview, faceWriter, faceView);
-                    step++;
+                    if (faceWriter != null)
+                    {
+                        backdrop.Show(showFull: false);
+                        AddVideoFrame(preview, faceWriter, faceView);
+                        step++;
+                    }
                 }
             }
         }
 
-        private static void AddVideoFrame(PreviewRenderUtility preview, Mp4Writer writer, ViewSpec view)
+        private static IVideoFrameWriter CreateVideoWriter(CaptureOutputFormat format, string path, ViewSpec view)
+        {
+            return format == CaptureOutputFormat.Mp4
+                ? (IVideoFrameWriter)new Mp4Writer(path, view.AnimWidth, view.AnimHeight, VideoFrameRate)
+                : new ProResWriter(path, view.AnimWidth, view.AnimHeight, VideoFrameRate);
+        }
+
+        private static void AddVideoFrame(PreviewRenderUtility preview, IVideoFrameWriter writer, ViewSpec view)
         {
             var texture = RenderView(preview, view);
             writer.AddFrame(Downscale(texture, view.AnimWidth, view.AnimHeight, topDown: false));

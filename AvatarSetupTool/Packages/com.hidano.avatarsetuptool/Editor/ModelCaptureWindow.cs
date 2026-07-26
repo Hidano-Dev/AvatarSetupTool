@@ -15,15 +15,20 @@ namespace Hidano.AvatarSetupTool.Editor
     {
         private const string SettingsPrefsKey = "Hidano.AvatarSetupTool.ModelCapture.Settings";
         private static readonly int[] SizePresets = { 256, 512, 1024, 2048, 4096, 8192 };
-        private static readonly string[] FormatLabels = { "画像のみ (PNG)", "PNG + MP4", "PNG + GIF" };
-        private static readonly string[] RotationLabels = { "5 秒 / 周", "10 秒 / 周", "20 秒 / 周", "カスタム" };
+
+        // Popup / GenericMenu は "/" をサブメニュー区切りとして扱うため、ラベルに "/" を使わないこと
+        private static readonly string[] FormatLabels =
+            { "画像のみ (PNG)", "PNG + MP4", "PNG + GIF", "PNG + ProRes 422 (MOV)" };
+        private static readonly string[] RotationLabels =
+            { "5 秒で 1 周", "10 秒で 1 周", "20 秒で 1 周", "カスタム" };
+        private static readonly string[] ViewModeLabels = { "全身のみ", "顔のみ", "全部" };
 
         [SerializeField] private GameObject target;
         [SerializeField] private CaptureSettings settings = new CaptureSettings();
         [SerializeField] private bool customSize;
         private Vector2 scroll;
 
-        [MenuItem("Window/Avatar Setup Tool/Model Capture")]
+        [MenuItem("Tools/Hidano/AvatarSetupTool/Model Capture")]
         public static void Open()
         {
             GetWindow<ModelCaptureWindow>("Model Capture");
@@ -92,9 +97,13 @@ namespace Hidano.AvatarSetupTool.Editor
             settings.format = (CaptureOutputFormat)EditorGUILayout.Popup(
                 "出力形式", (int)settings.format, FormatLabels);
 
+            settings.viewMode = (CaptureViewMode)EditorGUILayout.Popup(
+                new GUIContent("撮影範囲", "全身と顔アップのどちらの構図を撮影するか"),
+                (int)settings.viewMode, ViewModeLabels);
+
             DrawResolution();
 
-            if (settings.format == CaptureOutputFormat.Mp4)
+            if (settings.format == CaptureOutputFormat.Mp4 || settings.format == CaptureOutputFormat.ProRes422)
             {
                 DrawRotationSpeed();
             }
@@ -169,7 +178,7 @@ namespace Hidano.AvatarSetupTool.Editor
             {
                 EditorGUI.indentLevel++;
                 settings.customSecondsPerRotation = EditorGUILayout.FloatField(
-                    new GUIContent("秒 / 周 (1〜300)"), settings.customSecondsPerRotation);
+                    new GUIContent("1 周にかける秒数 (1〜300)"), settings.customSecondsPerRotation);
                 EditorGUI.indentLevel--;
             }
         }
@@ -197,8 +206,13 @@ namespace Hidano.AvatarSetupTool.Editor
                 }
             }
 
+            // 実際の保存時と同じ補完 (<View> や <Direction> の自動付与) を通した例を表示する
+            var effectivePattern = ModelCaptureService.EffectivePattern(
+                settings.fileNamePattern, multipleTargets: false, forStill: true,
+                bothViews: settings.viewMode == CaptureViewMode.Both);
+            var viewLabel = settings.viewMode == CaptureViewMode.FaceOnly ? "face" : "full";
             var preview = CaptureFileName.Resolve(
-                settings.fileNamePattern, "Model", "Target", "01_front", "full",
+                effectivePattern, "Model", "Target", "01_front", viewLabel,
                 settings.NormalizedImageSize, settings.NormalizedImageSize, DateTime.Now, settings.take);
             EditorGUILayout.LabelField(" ", $"例: {preview}.png", EditorStyles.miniLabel);
         }
@@ -224,7 +238,8 @@ namespace Hidano.AvatarSetupTool.Editor
         private void DrawMemoryEstimate()
         {
             EditorGUILayout.Space();
-            var required = ModelCaptureService.EstimateRequiredBytes(settings.NormalizedImageSize, settings.format);
+            var required = ModelCaptureService.EstimateRequiredBytes(
+                settings.NormalizedImageSize, settings.format, settings.viewMode);
             var budget = ModelCaptureService.MemoryBudgetBytes;
             var requiredMb = required / (1024 * 1024);
             if (required > budget)
@@ -236,8 +251,11 @@ namespace Hidano.AvatarSetupTool.Editor
             }
             else
             {
+                var note = settings.format == CaptureOutputFormat.Gif
+                    ? " GIF は全フレームを保持してから書き出すため、1 フレームずつ逐次エンコードする MP4 や ProRes より多めになります。"
+                    : string.Empty;
                 EditorGUILayout.HelpBox(
-                    $"推定メモリ使用量: 約 {requiredMb} MB (正方形想定の概算。横に広いモデルでは増加し、実行前に再チェックされます)",
+                    $"推定メモリ使用量: 約 {requiredMb} MB (正方形想定の概算。横に広いモデルでは増加し、実行前に再チェックされます)。{note}",
                     MessageType.Info);
             }
         }

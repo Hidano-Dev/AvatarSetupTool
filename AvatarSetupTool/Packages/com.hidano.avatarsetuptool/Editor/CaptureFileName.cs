@@ -9,13 +9,18 @@ namespace Hidano.AvatarSetupTool.Editor
     /// </summary>
     public static class CaptureFileName
     {
-        /// <summary>使用可能なワイルドカードと説明。UI の挿入メニューもこの順で並ぶ。</summary>
+        /// <summary>
+        /// 使用可能なワイルドカードと説明。UI の挿入メニューもこの順で並ぶ。
+        /// GenericMenu は項目名の "/" をサブメニュー区切りとして扱うため、説明に "/" を含めないこと。
+        /// 全身 / 顔アップの区別 (&lt;View&gt;) は「撮影範囲」設定で決まるため一覧には出さないが、
+        /// 手入力されたトークンは <see cref="Resolve"/> が解決し、両方を撮る設定でパターンに
+        /// 含まれていない場合は自動で補完される。
+        /// </summary>
         public static readonly (string Token, string Description)[] Wildcards =
         {
-            ("<Model>", "アセット / GameObject 名"),
+            ("<Model>", "アセット・GameObject 名"),
             ("<Target>", "Animator オブジェクト名"),
             ("<Direction>", "方向 (01_front など。動画では空)"),
-            ("<View>", "full / face"),
             ("<Resolution>", "出力解像度 (幅x高さ)"),
             ("<Date>", "日付 (yyyy-MM-dd)"),
             ("<Time>", "時刻 (HH-mm-ss)"),

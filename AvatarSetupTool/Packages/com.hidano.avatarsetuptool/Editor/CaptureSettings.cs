@@ -3,12 +3,21 @@ using UnityEngine;
 
 namespace Hidano.AvatarSetupTool.Editor
 {
-    /// <summary>キャプチャの出力形式。</summary>
+    /// <summary>キャプチャの出力形式。EditorPrefs に int で保存されるため既存値の順序は変えないこと。</summary>
     public enum CaptureOutputFormat
     {
         ImagesOnly,
         Mp4,
         Gif,
+        ProRes422,
+    }
+
+    /// <summary>撮影する構図の範囲 (全身 / 顔アップ)。</summary>
+    public enum CaptureViewMode
+    {
+        FullOnly,
+        FaceOnly,
+        Both,
     }
 
     /// <summary>ターンテーブル動画の回転速度(1 周にかける秒数)。</summary>
@@ -31,9 +40,11 @@ namespace Hidano.AvatarSetupTool.Editor
     {
         public const int MinImageSize = 256;
         public const int MaxImageSize = 8192;
-        public const string DefaultFileNamePattern = "<Target>_<Direction>_<View>";
+        public const string DefaultFileNamePattern = "<Target>_<Direction>";
 
         public CaptureOutputFormat format = CaptureOutputFormat.ImagesOnly;
+
+        public CaptureViewMode viewMode = CaptureViewMode.Both;
 
         /// <summary>PNG の高さ (px)。幅はモデルのアスペクト比に応じて自動で広がる。</summary>
         public int imageSize = 2048;
@@ -51,6 +62,13 @@ namespace Hidano.AvatarSetupTool.Editor
         /// <summary>ファイル名の &lt;Take&gt; に使う連番。撮影が成功するたびに +1 される。</summary>
         public int take = 1;
 
+        public bool CaptureFull => viewMode != CaptureViewMode.FaceOnly;
+
+        public bool CaptureFace => viewMode != CaptureViewMode.FullOnly;
+
+        /// <summary>撮影する構図の数 (1 または 2)。</summary>
+        public int ViewCount => viewMode == CaptureViewMode.Both ? 2 : 1;
+
         public float SecondsPerRotation => rotationSpeed switch
         {
             RotationSpeedPreset.Seconds5 => 5f,
@@ -61,7 +79,7 @@ namespace Hidano.AvatarSetupTool.Editor
 
         /// <summary>
         /// <see cref="imageSize"/> を範囲内かつ 4 の倍数に丸めた値。
-        /// GIF/MP4 は PNG の 1/2 解像度で、H.264 が偶数解像度を要求するため 4 の倍数に揃える。
+        /// GIF/MP4/ProRes は PNG の 1/2 解像度で、H.264 が偶数解像度を要求するため 4 の倍数に揃える。
         /// </summary>
         public int NormalizedImageSize => Mathf.Clamp((imageSize + 2) / 4 * 4, MinImageSize, MaxImageSize);
     }
