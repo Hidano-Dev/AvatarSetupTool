@@ -2,52 +2,64 @@
 
 ## 今回やったこと
 
-- `FbxModelCaptureTool` の出力ファイル名の方向名に番号プレフィックスを追加(`01_front` 〜 `08_front_right`)。名前順 = 正面から左向きに回転する順序。撮影順・GIF フレーム順も同じに変更
-- GIF アニメーション出力を追加(0.3.0): 8 方向 × 2 秒間隔の無限ループ GIF を全身/顔アップの 2 本生成(`モデル名_full.gif` / `モデル名_face.gif`)
-- 純 C# GIF89a エンコーダ `GifWriter.cs` を新規実装(外部ツール・ffmpeg 不要)。メディアンカット量子化 + LZW 圧縮
-- GIF 画質改善(0.3.1): Floyd–Steinberg ディザリング導入、512px→1024px、GIF 用再レンダリング廃止(PNG 用 2048px 描画をボックス平均縮小 = 2× SSAA)
-- バージョン 0.3.1 に更新。CHANGELOG を 0.3.0/0.3.1 に分割
+- スクショツールを EditorWindow ベースに改良(0.5.0)。UI とロジックを分離
+  - `ModelCaptureWindow.cs`(新規): 設定 UI。EditorPrefs へ JSON で設定を永続化
+  - `ModelCaptureService.cs`(`FbxModelCaptureTool.cs` を git mv、GUID 維持): UI 非依存ロジック。`Capture(GameObject, CaptureSettings, progress)` 公開で将来 CLI (-executeMethod) から呼べる
+  - `CaptureSettings.cs`(新規): 純粋データ。`CaptureFileName.cs`(新規): ワイルドカード解決
+- 撮影対象を ObjectField 指定に変更: FBX / Prefab に加え Hierarchy 上の GameObject(編集状態を Instantiate で複製、Camera/Light 無効化、lossyScale 維持)
+- 解像度 256〜8192px(高さ基準、4 の倍数丸め)。プリセット + カスタム。実行前に maxTextureSize と推定メモリ(実装メモリの半分が上限)を検証し、超過時は撮影せず警告
+- 背景を白 → グレー(RGB 184)+ グリッド(主線 1m / 細線 10cm、y=0 は主線)
+- MP4 回転速度を選択式に: 5/10/20 秒 + カスタム 1〜300 秒。デフォルト 10 秒/周(従来 6 秒)
+- ファイル名ワイルドカード(Recorder 風): `<Model> <Target> <Direction> <View> <Resolution> <Date> <Time> <Take>`。衝突するパターンにはトークン自動補完。Take は成功ごとに +1
+- 右クリックメニュー 3 項目 → 「Capture Model Images...」1 項目に統合(ウィンドウを開いて対象セット)。`Window > Avatar Setup Tool > Model Capture` も追加
+- batchmode コンパイル 2 回でエラー・警告ゼロを確認。未コミット
 
 ## 決定事項
 
-- GIF は ffmpeg 同梱ではなく自前エンコーダで実現(容量ゼロ増)
-- 番号はファイル名の完全な先頭ではなくモデル名の後ろ(`モデル名_01_front_full.png`)。複数 Animator 時のグループ化維持のため
-- 回転順は「正面 → front_left → left → back_left → back → back_right → right → front_right」(モデルが左を向いていく)
-- 今回の画質改善はパッチ(0.3.1)。新機能・API 変更なしのため
-- GIF サイズが大きすぎる場合は `GifImageSize`(現在 1024、ImageSize の約数必須)を下げる
+- ロジック層はダイアログ・プログレスバー禁止。進捗は `Action<string, float>`、結果は `CaptureResult` で返す
+- グリッドはテクスチャでなく頂点カラー付きメッシュ(細線→主線の順に追加、ZWrite Off の Sprites/Default で後勝ち描画)。8K でもメモリ増なし・線がクリスプ
+- カメラ固定・モデル回転方式は維持 → グリッドは回転中も静止
+- メモリ検証は実行時に全ターゲットの構図確定後に実施(アスペクト比が事前に不明のため)。UI 表示は正方形仮定の概算
+- 回転速度は MP4 のみ。GIF は従来どおり 8 方向 × 2 秒固定
+- 複数選択の一括撮影は廃止(ウィンドウは単一ターゲット)
+- 設定は EditorPrefs キー `Hidano.AvatarSetupTool.ModelCapture.Settings` に EditorJsonUtility で保存
 
 ## 捨てた選択肢と理由
 
-- **ffmpeg ポータブル版の同梱**: 数十 MB の容量増。GIF89a は自前実装で十分だった
-- **Unity Recorder 依存**: Editor 拡張パッケージには重い依存。GIF 対応も不確実
-- **APNG 出力**: フルカラーで画質は最良だが、Windows エクスプローラーで動かない。ユーザーに提案したが今回は不採用(GIF 改善で対応)
-- **GIF 用の低解像度別レンダリング**(初期実装): PNG 用 2048px 描画の縮小共用に変更。描画回数半減 + SSAA 効果
+- **グリッドをフル解像度テクスチャで生成**: 16384px 幅で 1GB 級のメモリ消費。メッシュ方式なら数百クアッドで済む
+- **グリッドをタイルテクスチャ + リピート**: 拡大時に線がぼける
+- **キャプチャ後の CPU 合成でグリッド描画**: モデルと背景の分離が不確実(モデルに背景色が含まれると誤爆)
+- **カスタムシェーダーでグリッド描画**: URP / BiRP 両対応の手間。Sprites/Default(頂点カラー・アンリット・URP 動作)で十分
+- **kiro spec 化**: ユーザーが直接実装を指示しており、過去セッションも直接実装の実績。spec は使わず
 
 ## ハマりどころ
 
-- **uloop CLI が全コマンド失敗**: ディスパッチャ(beta.22)の自己更新が CLI_UPDATE_REQUIRED の無限ループ。回避 = `%LOCALAPPDATA%\uloop\versions\3.0.0-beta.45\windows-amd64\uloop-project-runner.exe` を直接呼ぶ。beta.57 はプロトコル 4 でこのプロジェクトのパッケージ(プロトコル 3)と不一致。**beta.45 を使う**(メモリにも記録済み)
-- `uloop launch` はランナー非対応 → Unity 直接起動(`D:\UnityEditors\6000.3.19f1\Editor\Unity.exe -projectPath ...`)。起動完了はパイプ `\\.\pipe\uloop-UnityCliLoop-cfa18d2cc7ff7806` の出現で判定
-- 別プロジェクトの Unity(OscSurface / (非公開プロジェクト))が起動中でも AvatarSetupTool のパイプは開かない(パイプ名はプロジェクト固有)。プロセス名だけで判断しない
-- ユーザーが他プロジェクトで Unity 作業中の場合は `-batchmode -nographics -quit -logFile` でコンパイル確認する(GUI エディタを増やさない)
-- `Texture2D.GetPixels32` は下端行始まり。GIF はトップダウンなので反転必須(DownscaleForGif 内で実施)
+- `EditorGUILayout.Popup(GUIContent, int, string[])` オーバーロードは存在しない → GUIContent[] に変換して使う
+- git mv した直後の Write は先に Read が必要(ツール制約)
+- batchmode コンパイル中にソース編集すると反映が不確実 → 2 回目を実行して確認した
+- AvatarSetupTool の uloop パイプは `uloop-UnityCliLoop-cfa18d2cc7ff7806`。今回開いていたパイプ `ba9f03c5bd80ba3e` は別プロジェクトのもの。パイプ名で判別する
+- ユーザーが他プロジェクトで Unity 作業中 → GUI エディタは起動せず `-batchmode -nographics -quit -logFile` でコンパイル確認(前回からの引き継ぎ、有効だった)
 
 ## 学び
 
-- GIF89a は仕様が単純(256 色パレット + LZW)で、量子化込みでも約 450 行の純 C# で実装可能
-- GIF の見た目品質はディザリングの有無が支配的。フラット色(トゥーンのベタ塗り・白背景)は誤差 0 でディザノイズが乗らないため、アニメ調モデルとの相性が良い
-- GifWriter は UnityEngine 依存が Color32/Mathf だけなので、シム 2 つで .NET 単体テスト可能(scratchpad の giftest プロジェクト方式)。System.Drawing でデコード検証できる
-- LZW のコード幅拡張タイミングは「emit 後、次コード割り当て前に nextCode == 1<<codeSize なら +1」(ppmtogif 方式)で GDI+ デコード互換を確認済み
+- `PreviewRenderUtility.AddSingleGO` でシーン上の GameObject の複製をプレビューシーンに入れられる(プレハブ以外も撮影可能)
+- `Object.Instantiate` は親から外れるので lossyScale の引き継ぎが必要
+- 並行投影 + カメラ固定なら、ワールド XY 平面のメッシュを奥に置くだけで画面座標に一致した背景グリッドになる
+- Windows ではファイル名に `<` `>` が使えないため、未知トークンは Sanitize で自然に `_` へ潰れる
 
 ## 次にやること
 
-1. **[高] 実モデルでの動作確認**(ユーザー作業): 右クリック → Capture Model Images で PNG 16 枚 + GIF 2 本の出力、GIF の画質・ファイルサイズを目視確認。未実施
-2. [中] 0.3.1 のコミット(ユーザーは自分でコミットする習慣。package.json と CHANGELOG.md が未コミット)
-3. [低] GIF サイズが大きすぎたら `GifImageSize` 調整を検討
+1. **[高] 実モデルでの動作確認**(ユーザー作業): ウィンドウから PNG / MP4 / GIF を出力し、グリッドの見た目(色・太さ)、Hierarchy オブジェクト撮影、8K などの大解像度時の警告動作を目視確認。未実施
+2. [中] 0.5.0 のコミット(ユーザーは自分でコミットする習慣。全変更が未コミット)
+3. [低] グリッドの色・線幅の調整(`ModelCaptureService` の `BackgroundColor` / `SubLineColor` / `MainLineColor` / `CreateGridObject` 内の 3px / 1.5px)
+4. [低] GIF にも回転速度(フレーム間隔)設定を適用するか検討(現状 2 秒固定)
 
 ## 関連ファイル
 
-- `AvatarSetupTool/Packages/com.hidano.avatarsetuptool/Editor/FbxModelCaptureTool.cs` — 撮影順・番号付け・GIF フレーム生成(CaptureShot / DownscaleForGif)
-- `AvatarSetupTool/Packages/com.hidano.avatarsetuptool/Editor/GifWriter.cs` — GIF89a エンコーダ(新規、meta の GUID はランダム生成済み)
-- `AvatarSetupTool/Packages/com.hidano.avatarsetuptool/CHANGELOG.md`
-- `AvatarSetupTool/Packages/com.hidano.avatarsetuptool/package.json` — 0.3.1
-- 検証ハーネス: scratchpad `giftest/`(セッション終了で消える。UnityShim.cs + Program.cs 方式は再現容易)
+- `AvatarSetupTool/Packages/com.hidano.avatarsetuptool/Editor/ModelCaptureWindow.cs` — 設定 UI(新規)
+- `AvatarSetupTool/Packages/com.hidano.avatarsetuptool/Editor/ModelCaptureService.cs` — 撮影ロジック(旧 FbxModelCaptureTool.cs)
+- `AvatarSetupTool/Packages/com.hidano.avatarsetuptool/Editor/CaptureSettings.cs` — 設定データ(新規)
+- `AvatarSetupTool/Packages/com.hidano.avatarsetuptool/Editor/CaptureFileName.cs` — ワイルドカード解決(新規)
+- `AvatarSetupTool/Packages/com.hidano.avatarsetuptool/CHANGELOG.md` — 0.5.0 追記
+- `AvatarSetupTool/Packages/com.hidano.avatarsetuptool/package.json` — 0.5.0
+- コンパイルログ: scratchpad `compile.log` / `compile2.log`(セッション終了で消える)
