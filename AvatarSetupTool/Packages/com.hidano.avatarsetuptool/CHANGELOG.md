@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-07-26
+
+### Added
+
+- `FbxModelCaptureTool` にターンテーブル MP4 出力を追加し、デフォルトの動画形式に変更: モデルを 30fps・6 秒/周で滑らかに 1 回転させた H.264 MP4 (全身 / 顔アップの 2 本) を生成。エンコードは `UnityEditor.Media.MediaEncoder` によるエディタ内完結で、Play モードや ffmpeg 等の外部ツールは不要。回転中のズーム揺れを防ぐため、1 周分を包含する固定構図(回転軸中心・水平は外接円半径)で撮影
+- 従来の GIF 出力用にメニュー「Capture Model Images (GIF)」を追加(既存の「Capture Model Images」は MP4 出力になる)
+
+### Changed
+
+- `FbxModelCaptureTool` の GIF 用縮小処理を MP4 と共用の `Downscale` に一般化(行順の上下反転を引数で切り替え)
+
 ## [0.3.1] - 2026-07-26
 
 ### Changed
