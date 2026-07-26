@@ -34,15 +34,24 @@ namespace Hidano.AvatarSetupTool.Editor
     {
         private const int VideoFrameRate = 30;
         private const int GifFrameDelayCentiseconds = 200;
+
+        /// <summary>
+        /// H.264 の実装上の解像度上限。規格上は Level 6 で 8192x4320 まで定義されているが、
+        /// Unity の MediaEncoder が使う Windows の Media Foundation エンコーダは
+        /// Level 5.2 相当 (4096x2304、約 940 万ピクセル) までしか受け付けない。
+        /// </summary>
+        internal const int H264MaxDimension = 4096;
+        internal const long H264MaxPixels = 4096L * 2304L;
         private const float FullBodyMargin = 1.05f;
         private const float MaxFullBodyAspect = 8f; // 幅の暴走防止
         private const float FacePaddingRatio = 0.1f;
         private const float FaceFallbackHeightRatio = 0.15f;
-        private const int SuperSampleFactor = 2; // PNG 解像度に対する GIF/MP4 の縮小率 (ボックス平均 = SSAA)
+        internal const int SuperSampleFactor = 2; // PNG 解像度に対する動画の縮小率 (ボックス平均 = SSAA)
 
         private static readonly Color32 BackgroundColor = new Color32(184, 184, 184, 255);
         private static readonly Color32 SubLineColor = new Color32(164, 164, 164, 255);
         private static readonly Color32 MainLineColor = new Color32(128, 128, 128, 255);
+        private const float SubLineAlpha = 0.6f; // 10cm 線は半透明にして 1m の主線と視覚的に区別する
         private const float SubLineSpacing = 0.1f; // 10cm 間隔の細線。10 本ごと (1m) に主線
         private const int SubLinesPerMainLine = 10;
 
@@ -139,7 +148,7 @@ namespace Hidano.AvatarSetupTool.Editor
                     return CaptureResult.Fail(memoryError);
                 }
 
-                var outputDir = Path.Combine(settings.outputRoot, CaptureFileName.Sanitize(modelName));
+                var outputDir = UniqueOutputDirectory(settings.outputRoot, CaptureFileName.Sanitize(modelName));
                 Directory.CreateDirectory(outputDir);
 
                 var allRenderers = instance.GetComponentsInChildren<Renderer>(true);
@@ -309,6 +318,54 @@ namespace Hidano.AvatarSetupTool.Editor
         public static long MemoryBudgetBytes => (long)SystemInfo.systemMemorySize * 1024 * 1024 / 2;
 
         /// <summary>
+        /// 出力ファイル合計サイズの概算 (バイト)。ディスク空き容量チェック用の目安で、
+        /// ターゲット 1 体・正方形構図を仮定する (横に広いモデルや複数ターゲットでは増える)。
+        /// </summary>
+        public static long EstimateOutputBytes(CaptureSettings settings)
+        {
+            var size = (long)settings.NormalizedImageSize;
+            var renderPixels = size * size;
+            var animPixels = renderPixels / (SuperSampleFactor * SuperSampleFactor);
+            var viewCount = settings.ViewCount;
+
+            // PNG: グリッド背景 + モデルでおおむね 0.5 bytes/px 程度
+            var bytes = renderPixels / 2 * Directions.Length * viewCount;
+
+            var frames = (long)Mathf.RoundToInt(VideoFrameRate * settings.SecondsPerRotation);
+            switch (settings.format)
+            {
+                case CaptureOutputFormat.Gif:
+                    bytes += animPixels / 2 * Directions.Length * viewCount;
+                    break;
+                case CaptureOutputFormat.Mp4:
+                    // VideoBitrateMode.High ≒ 0.3 bit/px/フレーム程度
+                    bytes += animPixels * frames / 25 * viewCount;
+                    break;
+                case CaptureOutputFormat.ProRes422:
+                    // 固定品質 (qScale 2) の実測 + 余裕でおおむね 3 bit/px/フレーム
+                    bytes += animPixels * 3 / 8 * frames * viewCount;
+                    break;
+            }
+
+            return bytes;
+        }
+
+        /// <summary>
+        /// 出力先フォルダ名を決める。同名フォルダに中身がある場合は
+        /// "名前 (1)"、"名前 (2)" … と連番を付けて別フォルダにする (上書き防止)。
+        /// </summary>
+        private static string UniqueOutputDirectory(string root, string name)
+        {
+            var dir = Path.Combine(root, name);
+            for (var i = 1; Directory.Exists(dir) && Directory.EnumerateFileSystemEntries(dir).Any(); i++)
+            {
+                dir = Path.Combine(root, $"{name} ({i})");
+            }
+
+            return dir;
+        }
+
+        /// <summary>
         /// ワイルドカードの不足でファイル名が衝突しないよう、必要なトークンを補ったパターンを返す。
         /// &lt;View&gt; は全身と顔アップの両方を撮る場合のみ補完する (片方だけなら衝突しない)。
         /// </summary>
@@ -408,6 +465,16 @@ namespace Hidano.AvatarSetupTool.Editor
                     var renderPixels = (long)view.RenderWidth * view.RenderHeight;
                     peak = Math.Max(peak, renderPixels * 4 * 4);
                     animPixels += (long)view.AnimWidth * view.AnimHeight;
+
+                    if (settings.format == CaptureOutputFormat.Mp4
+                        && (view.AnimWidth > H264MaxDimension || view.AnimHeight > H264MaxDimension
+                            || (long)view.AnimWidth * view.AnimHeight > H264MaxPixels))
+                    {
+                        return $"MP4 (H.264) の動画解像度 {view.AnimWidth}x{view.AnimHeight} が"
+                            + $"エンコーダの上限 ({H264MaxDimension}x2304 相当) を超えています。"
+                            + "ProRes 422 (MOV) を使うか、解像度を下げてください"
+                            + " (横に広いモデルは幅が自動拡張されるため、より小さい解像度が必要です)。";
+                    }
                 }
 
                 if (settings.format == CaptureOutputFormat.Gif)
@@ -642,7 +709,8 @@ namespace Hidano.AvatarSetupTool.Editor
                 foreach (var isMainPass in new[] { false, true })
                 {
                     var width = isMainPass ? mainWidth : subWidth;
-                    var color = isMainPass ? MainLineColor : SubLineColor;
+                    var color = GridLineColor(
+                        isMainPass ? MainLineColor : SubLineColor, isMainPass ? 1f : SubLineAlpha);
 
                     // 縦線 (x = n * 0.1m)
                     for (var i = Mathf.CeilToInt(minX / SubLineSpacing);
@@ -697,6 +765,24 @@ namespace Hidano.AvatarSetupTool.Editor
             private static bool IsMainLine(int index)
             {
                 return index % SubLinesPerMainLine == 0;
+            }
+
+            /// <summary>
+            /// 頂点カラーを描画用に変換する。Sprites/Default は頂点カラーを色空間変換せずに
+            /// そのまま使うため、リニア色空間では sRGB 値をリニアへ変換してから渡さないと
+            /// 線が明るく化けてしまう (10cm 線が背景より明るくなり、1m の主線が背景と
+            /// ほぼ同じ値になって消える)。また同シェーダは乗算済みアルファ
+            /// (Blend One OneMinusSrcAlpha) なので RGB にアルファを掛けておく。
+            /// </summary>
+            private static Color32 GridLineColor(Color32 srgb, float alpha)
+            {
+                var color = (Color)srgb;
+                if (QualitySettings.activeColorSpace == ColorSpace.Linear)
+                {
+                    color = color.linear;
+                }
+
+                return new Color(color.r * alpha, color.g * alpha, color.b * alpha, alpha);
             }
 
             private static void AddQuad(
@@ -762,9 +848,20 @@ namespace Hidano.AvatarSetupTool.Editor
 
         private static IVideoFrameWriter CreateVideoWriter(CaptureOutputFormat format, string path, ViewSpec view)
         {
-            return format == CaptureOutputFormat.Mp4
-                ? (IVideoFrameWriter)new Mp4Writer(path, view.AnimWidth, view.AnimHeight, VideoFrameRate)
-                : new ProResWriter(path, view.AnimWidth, view.AnimHeight, VideoFrameRate);
+            try
+            {
+                return format == CaptureOutputFormat.Mp4
+                    ? (IVideoFrameWriter)new Mp4Writer(path, view.AnimWidth, view.AnimHeight, VideoFrameRate)
+                    : new ProResWriter(path, view.AnimWidth, view.AnimHeight, VideoFrameRate);
+            }
+            catch (InvalidOperationException e)
+            {
+                // MediaEncoder は解像度超過などで初期化に失敗すると素の例外を投げる
+                throw new InvalidOperationException(
+                    $"動画エンコーダの初期化に失敗しました ({view.AnimWidth}x{view.AnimHeight})。"
+                    + "H.264 の解像度上限を超えているか、出力先に書き込めない可能性があります。"
+                    + "ProRes 422 (MOV) を使うか、解像度を下げてください。", e);
+            }
         }
 
         private static void AddVideoFrame(PreviewRenderUtility preview, IVideoFrameWriter writer, ViewSpec view)

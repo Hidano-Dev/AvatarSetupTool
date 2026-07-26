@@ -95,6 +95,13 @@ namespace Hidano.AvatarSetupTool.Editor
         {
             ConvertToYCbCr422(pixels);
             var frame = EncodeFrame();
+            if (stream.Position + frame.Length > uint.MaxValue)
+            {
+                // mdat サイズと chunk オフセットが 32bit のため。co64 対応までは明示的に失敗させる
+                throw new InvalidOperationException(
+                    "MOV ファイルが 4 GB を超えるため書き出せません。解像度か回転秒数を下げてください。");
+            }
+
             stream.Write(frame, 0, frame.Length);
             sampleSizes.Add(frame.Length);
         }

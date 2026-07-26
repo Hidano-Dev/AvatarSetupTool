@@ -102,6 +102,7 @@ namespace Hidano.AvatarSetupTool.Editor
                 (int)settings.viewMode, ViewModeLabels);
 
             DrawResolution();
+            DrawH264LimitWarning();
 
             if (settings.format == CaptureOutputFormat.Mp4 || settings.format == CaptureOutputFormat.ProRes422)
             {
@@ -167,6 +168,40 @@ namespace Hidano.AvatarSetupTool.Editor
                 }
 
                 EditorGUI.indentLevel--;
+            }
+        }
+
+        /// <summary>
+        /// MP4 選択時、動画解像度が H.264 エンコーダの上限を確実に超える設定なら警告する。
+        /// 横に広いモデルで幅だけ超えるケースは実行前チェック (Service 側) が検出する。
+        /// </summary>
+        private void DrawH264LimitWarning()
+        {
+            if (settings.format != CaptureOutputFormat.Mp4)
+            {
+                return;
+            }
+
+            var videoSize = (long)(settings.NormalizedImageSize / ModelCaptureService.SuperSampleFactor);
+            if (videoSize <= ModelCaptureService.H264MaxDimension
+                && videoSize * videoSize <= ModelCaptureService.H264MaxPixels)
+            {
+                return;
+            }
+
+            EditorGUILayout.HelpBox(
+                $"この解像度では動画が {videoSize}px 四方以上になり、MP4 (H.264) エンコーダの上限"
+                + " (4096x2304 相当) を超えるため撮影に失敗します。"
+                + "ProRes 422 (MOV) に切り替えるか、解像度を下げてください。",
+                MessageType.Warning);
+            using (new EditorGUILayout.HorizontalScope())
+            {
+                GUILayout.FlexibleSpace();
+                if (GUILayout.Button("ProRes 422 (MOV) に切り替える", GUILayout.Width(220f)))
+                {
+                    settings.format = CaptureOutputFormat.ProRes422;
+                    GUI.FocusControl(null);
+                }
             }
         }
 
@@ -282,6 +317,11 @@ namespace Hidano.AvatarSetupTool.Editor
 
         private void Run()
         {
+            if (!ConfirmDiskSpace())
+            {
+                return;
+            }
+
             try
             {
                 var result = ModelCaptureService.Capture(target, settings,
@@ -296,10 +336,59 @@ namespace Hidano.AvatarSetupTool.Editor
                 SaveSettings();
                 EditorUtility.RevealInFinder(result.OutputDirectory);
             }
+            catch (Exception e)
+            {
+                Debug.LogException(e);
+                EditorUtility.DisplayDialog("Capture Model Images", $"撮影に失敗しました。\n{e.Message}", "OK");
+            }
             finally
             {
                 EditorUtility.ClearProgressBar();
             }
+        }
+
+        /// <summary>
+        /// 出力先ドライブの空き容量が推定出力サイズに対して不足しそうなら確認ダイアログを出す。
+        /// 続行が選ばれたか、チェック不要 (十分な空き / 判定不能) なら true。
+        /// </summary>
+        private bool ConfirmDiskSpace()
+        {
+            long available;
+            try
+            {
+                var driveRoot = Path.GetPathRoot(Path.GetFullPath(settings.outputRoot));
+                if (string.IsNullOrEmpty(driveRoot))
+                {
+                    return true;
+                }
+
+                available = new DriveInfo(driveRoot).AvailableFreeSpace;
+            }
+            catch (Exception)
+            {
+                return true; // ネットワークパスなどで空き容量を判定できない場合はチェックしない
+            }
+
+            var estimated = ModelCaptureService.EstimateOutputBytes(settings);
+            const long ReserveBytes = 256L * 1024 * 1024; // 出力以外のための最低限の余裕
+            if (estimated + ReserveBytes <= available)
+            {
+                return true;
+            }
+
+            return EditorUtility.DisplayDialog(
+                "Capture Model Images",
+                "出力先ドライブの空き容量が不足する可能性があります。\n"
+                + $"推定出力サイズ: 約 {FormatSize(estimated)} (ターゲット 1 体・正方形想定の概算)\n"
+                + $"空き容量: {FormatSize(available)}\n\n続行しますか?",
+                "続行", "中止");
+        }
+
+        private static string FormatSize(long bytes)
+        {
+            return bytes >= 1L << 30
+                ? $"{bytes / (double)(1L << 30):F1} GB"
+                : $"{bytes / (1L << 20)} MB";
         }
     }
 }
