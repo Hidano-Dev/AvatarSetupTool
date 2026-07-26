@@ -27,6 +27,8 @@ namespace Hidano.AvatarSetupTool.Editor
                 frameRate = new MediaRational(frameRate),
                 width = (uint)width,
                 height = (uint)height,
+                // 未指定だと VideoBitrateMode.Low になり画質が落ちるため明示する
+                bitRateMode = UnityEditor.VideoBitrateMode.High,
             };
             encoder = new MediaEncoder(filePath, attributes);
             frameTexture = new Texture2D(width, height, TextureFormat.RGBA32, false);
