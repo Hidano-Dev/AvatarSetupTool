@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-07-26
+
+### Added
+
+- モデルキャプチャ専用の設定 UI `ModelCaptureWindow` を追加 (Window > Avatar Setup Tool > Model Capture)。撮影対象は Project の FBX / Prefab に加えて、Hierarchy 上で編集中の GameObject も指定可能 (現在の編集状態を複製して撮影)。設定は EditorPrefs に保存され、次回起動時も維持される
+- 解像度を 256〜8192px (高さ基準、4 の倍数) の範囲で選択可能に。プリセット (256/512/1024/2048/4096/8192) とカスタム値に対応。実行前に GPU テクスチャ上限とメモリ使用量を見積もり、超過する場合は撮影せず警告を表示
+- MP4 の回転速度を選択可能に (5 秒 / 10 秒 / 20 秒 / カスタム 1〜300 秒)。デフォルトは 10 秒 / 周 (従来は 6 秒 / 周)
+- 出力ファイル名のワイルドカードに対応 (Unity Recorder と同様の `<Token>` 形式): `<Model>` `<Target>` `<Direction>` `<View>` `<Resolution>` `<Date>` `<Time>` `<Take>`。ファイル名が衝突するパターンには必要なトークンを自動で補完
+
+### Changed
+
+- 背景を白一色からグレー一色 + グリッド線に変更。主線は 1m 間隔、細線は 10cm 間隔で、床 (y=0) は主線。カメラ固定のためターンテーブル回転中もグリッドは静止する
+- ロジックを UI から分離: `FbxModelCaptureTool` を `ModelCaptureService` (UI 非依存、将来 CLI から `-executeMethod` 等で呼び出し可能) と `ModelCaptureWindow` (EditorWindow) に再構成
+- Project ウィンドウの右クリックメニューを出力別 3 項目から「Capture Model Images...」1 項目に統合 (選択アセットを対象にセットしてウィンドウを開く)。出力形式はウィンドウ内で選択する
+
 ## [0.4.0] - 2026-07-26
 
 ### Added

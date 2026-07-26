@@ -1,0 +1,287 @@
+using System;
+using System.IO;
+using System.Linq;
+using UnityEditor;
+using UnityEngine;
+
+namespace Hidano.AvatarSetupTool.Editor
+{
+    /// <summary>
+    /// モデルキャプチャの設定 UI。ロジックは <see cref="ModelCaptureService"/> にあり、
+    /// このクラスは設定の編集・保存 (EditorPrefs) と、実行時のダイアログ /
+    /// プログレスバー表示のみを担当する。
+    /// </summary>
+    public sealed class ModelCaptureWindow : EditorWindow
+    {
+        private const string SettingsPrefsKey = "Hidano.AvatarSetupTool.ModelCapture.Settings";
+        private static readonly int[] SizePresets = { 256, 512, 1024, 2048, 4096, 8192 };
+        private static readonly string[] FormatLabels = { "画像のみ (PNG)", "PNG + MP4", "PNG + GIF" };
+        private static readonly string[] RotationLabels = { "5 秒 / 周", "10 秒 / 周", "20 秒 / 周", "カスタム" };
+
+        [SerializeField] private GameObject target;
+        [SerializeField] private CaptureSettings settings = new CaptureSettings();
+        [SerializeField] private bool customSize;
+        private Vector2 scroll;
+
+        [MenuItem("Window/Avatar Setup Tool/Model Capture")]
+        public static void Open()
+        {
+            GetWindow<ModelCaptureWindow>("Model Capture");
+        }
+
+        [MenuItem("Assets/Avatar Setup Tool/Capture Model Images...", false, 1000)]
+        private static void OpenFromAssets()
+        {
+            var window = GetWindow<ModelCaptureWindow>("Model Capture");
+            if (Selection.activeGameObject != null)
+            {
+                window.target = Selection.activeGameObject;
+            }
+        }
+
+        [MenuItem("Assets/Avatar Setup Tool/Capture Model Images...", true)]
+        private static bool ValidateOpenFromAssets()
+        {
+            return Selection.activeGameObject != null;
+        }
+
+        private void OnEnable()
+        {
+            var json = EditorPrefs.GetString(SettingsPrefsKey, string.Empty);
+            if (!string.IsNullOrEmpty(json))
+            {
+                try
+                {
+                    EditorJsonUtility.FromJsonOverwrite(json, settings);
+                }
+                catch (Exception)
+                {
+                    settings = new CaptureSettings();
+                }
+            }
+
+            if (string.IsNullOrEmpty(settings.outputRoot))
+            {
+                settings.outputRoot = Environment.GetFolderPath(Environment.SpecialFolder.MyPictures);
+            }
+
+            customSize = Array.IndexOf(SizePresets, settings.imageSize) < 0;
+        }
+
+        private void OnDisable()
+        {
+            SaveSettings();
+        }
+
+        private void SaveSettings()
+        {
+            EditorPrefs.SetString(SettingsPrefsKey, EditorJsonUtility.ToJson(settings));
+        }
+
+        private void OnGUI()
+        {
+            scroll = EditorGUILayout.BeginScrollView(scroll);
+            EditorGUI.BeginChangeCheck();
+
+            EditorGUILayout.Space();
+            target = (GameObject)EditorGUILayout.ObjectField(
+                new GUIContent("撮影対象", "Project の FBX / Prefab、または Hierarchy 上の GameObject"),
+                target, typeof(GameObject), true);
+
+            EditorGUILayout.Space();
+            settings.format = (CaptureOutputFormat)EditorGUILayout.Popup(
+                "出力形式", (int)settings.format, FormatLabels);
+
+            DrawResolution();
+
+            if (settings.format == CaptureOutputFormat.Mp4)
+            {
+                DrawRotationSpeed();
+            }
+
+            DrawFileName();
+            DrawOutputRoot();
+
+            settings.take = Mathf.Max(1, EditorGUILayout.IntField(
+                new GUIContent("テイク番号", "<Take> に使われる連番。撮影が成功すると +1 されます"),
+                settings.take));
+
+            if (EditorGUI.EndChangeCheck())
+            {
+                SaveSettings();
+            }
+
+            DrawMemoryEstimate();
+
+            EditorGUILayout.Space();
+            var error = ValidationError();
+            using (new EditorGUI.DisabledScope(error != null))
+            {
+                if (GUILayout.Button("撮影開始", GUILayout.Height(32f)))
+                {
+                    Run();
+                    GUIUtility.ExitGUI();
+                }
+            }
+
+            if (error != null)
+            {
+                EditorGUILayout.HelpBox(error, MessageType.Info);
+            }
+
+            EditorGUILayout.EndScrollView();
+        }
+
+        private void DrawResolution()
+        {
+            var presetIndex = customSize ? -1 : Array.IndexOf(SizePresets, settings.imageSize);
+            var options = SizePresets.Select(size => new GUIContent($"{size} px"))
+                .Append(new GUIContent("カスタム")).ToArray();
+            var selected = EditorGUILayout.Popup(
+                new GUIContent("解像度 (高さ)", "PNG の高さ。横に広いモデルは幅が自動で拡張されます (最大 8 倍)"),
+                presetIndex < 0 ? SizePresets.Length : presetIndex, options);
+            if (selected < SizePresets.Length)
+            {
+                customSize = false;
+                settings.imageSize = SizePresets[selected];
+            }
+            else
+            {
+                customSize = true;
+                EditorGUI.indentLevel++;
+                settings.imageSize = EditorGUILayout.DelayedIntField(
+                    $"カスタム ({CaptureSettings.MinImageSize}〜{CaptureSettings.MaxImageSize})",
+                    settings.imageSize);
+                if (settings.imageSize != settings.NormalizedImageSize)
+                {
+                    EditorGUILayout.LabelField(" ", $"→ {settings.NormalizedImageSize} px に丸めて撮影します (4 の倍数)");
+                }
+
+                EditorGUI.indentLevel--;
+            }
+        }
+
+        private void DrawRotationSpeed()
+        {
+            settings.rotationSpeed = (RotationSpeedPreset)EditorGUILayout.Popup(
+                "回転速度", (int)settings.rotationSpeed, RotationLabels);
+            if (settings.rotationSpeed == RotationSpeedPreset.Custom)
+            {
+                EditorGUI.indentLevel++;
+                settings.customSecondsPerRotation = EditorGUILayout.FloatField(
+                    new GUIContent("秒 / 周 (1〜300)"), settings.customSecondsPerRotation);
+                EditorGUI.indentLevel--;
+            }
+        }
+
+        private void DrawFileName()
+        {
+            EditorGUILayout.Space();
+            using (new EditorGUILayout.HorizontalScope())
+            {
+                settings.fileNamePattern = EditorGUILayout.TextField("ファイル名", settings.fileNamePattern);
+                if (GUILayout.Button("+ ワイルドカード", GUILayout.Width(110f)))
+                {
+                    var menu = new GenericMenu();
+                    foreach (var (token, description) in CaptureFileName.Wildcards)
+                    {
+                        menu.AddItem(new GUIContent($"{token}  —  {description}"), false, () =>
+                        {
+                            settings.fileNamePattern += token;
+                            SaveSettings();
+                            Repaint();
+                        });
+                    }
+
+                    menu.ShowAsContext();
+                }
+            }
+
+            var preview = CaptureFileName.Resolve(
+                settings.fileNamePattern, "Model", "Target", "01_front", "full",
+                settings.NormalizedImageSize, settings.NormalizedImageSize, DateTime.Now, settings.take);
+            EditorGUILayout.LabelField(" ", $"例: {preview}.png", EditorStyles.miniLabel);
+        }
+
+        private void DrawOutputRoot()
+        {
+            using (new EditorGUILayout.HorizontalScope())
+            {
+                settings.outputRoot = EditorGUILayout.TextField("出力先", settings.outputRoot);
+                if (GUILayout.Button("...", GUILayout.Width(30f)))
+                {
+                    var selected = EditorUtility.OpenFolderPanel("キャプチャの出力先を選択", settings.outputRoot, string.Empty);
+                    if (!string.IsNullOrEmpty(selected))
+                    {
+                        settings.outputRoot = selected;
+                        SaveSettings();
+                        GUI.FocusControl(null);
+                    }
+                }
+            }
+        }
+
+        private void DrawMemoryEstimate()
+        {
+            EditorGUILayout.Space();
+            var required = ModelCaptureService.EstimateRequiredBytes(settings.NormalizedImageSize, settings.format);
+            var budget = ModelCaptureService.MemoryBudgetBytes;
+            var requiredMb = required / (1024 * 1024);
+            if (required > budget)
+            {
+                EditorGUILayout.HelpBox(
+                    $"推定メモリ使用量 約 {requiredMb} MB が上限の目安 ({budget / (1024 * 1024)} MB) を超えるため、"
+                    + "撮影は実行前のチェックで中断されます。解像度を下げてください。",
+                    MessageType.Warning);
+            }
+            else
+            {
+                EditorGUILayout.HelpBox(
+                    $"推定メモリ使用量: 約 {requiredMb} MB (正方形想定の概算。横に広いモデルでは増加し、実行前に再チェックされます)",
+                    MessageType.Info);
+            }
+        }
+
+        private string ValidationError()
+        {
+            if (target == null)
+            {
+                return "撮影対象を指定してください。";
+            }
+
+            if (string.IsNullOrEmpty(settings.outputRoot))
+            {
+                return "出力先フォルダを指定してください。";
+            }
+
+            if (!Directory.Exists(settings.outputRoot))
+            {
+                return $"出力先フォルダが存在しません: {settings.outputRoot}";
+            }
+
+            return null;
+        }
+
+        private void Run()
+        {
+            try
+            {
+                var result = ModelCaptureService.Capture(target, settings,
+                    (text, ratio) => EditorUtility.DisplayProgressBar("Capture Model Images", text, ratio));
+                if (!result.Success)
+                {
+                    EditorUtility.DisplayDialog("Capture Model Images", result.Error, "OK");
+                    return;
+                }
+
+                settings.take++;
+                SaveSettings();
+                EditorUtility.RevealInFinder(result.OutputDirectory);
+            }
+            finally
+            {
+                EditorUtility.ClearProgressBar();
+            }
+        }
+    }
+}
