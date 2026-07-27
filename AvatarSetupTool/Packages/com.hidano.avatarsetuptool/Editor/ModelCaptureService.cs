@@ -58,9 +58,9 @@ namespace Hidano.AvatarSetupTool.Editor
         private const int SubLinesPerMainLine = 10;
 
         // 10cm 線は破線にして 1m の実線の主線と区別する。周期をグリッド間隔の約数にすることで
-        // 破線の点が必ず 5cm の倍数の位置 (= 線どうしの交点を含む) に来るようにする
-        private const float SubLineDashPeriod = 0.05f;
-        private const float SubLineDashLength = 0.025f;
+        // 破線の点が必ず 2cm の倍数の位置 (= 線どうしの交点を含む) に来るようにする
+        private const float SubLineDashPeriod = 0.02f;
+        private const float SubLineDashLength = 0.01f;
 
         /// <summary>
         /// カメラは -Z 側に固定し、モデル側を Y 回転させて 8 方向を撮る。
@@ -352,6 +352,7 @@ namespace Hidano.AvatarSetupTool.Editor
         /// <summary>
         /// 出力ファイル合計サイズの概算 (バイト)。ディスク空き容量チェック用の目安で、
         /// ターゲット 1 体・正方形構図を仮定する (横に広いモデルや複数ターゲットでは増える)。
+        /// 係数は実測 (グリッド背景 + テストモデル、1024px) の 1.5〜2 倍程度の安全率。
         /// </summary>
         public static long EstimateOutputBytes(CaptureSettings settings)
         {
@@ -360,26 +361,67 @@ namespace Hidano.AvatarSetupTool.Editor
             var animPixels = renderPixels / (SuperSampleFactor * SuperSampleFactor);
             var viewCount = settings.ViewCount;
 
-            // PNG: グリッド背景 + モデルでおおむね 0.5 bytes/px 程度
-            var bytes = renderPixels / 2 * Directions.Length * viewCount;
+            // PNG: 実測 0.15 bytes/px 程度 → 0.25 bytes/px で見積もる
+            var bytes = renderPixels / 4 * Directions.Length * viewCount;
 
             var frames = (long)Mathf.RoundToInt(VideoFrameRate * settings.SecondsPerRotation);
             switch (settings.format)
             {
                 case CaptureOutputFormat.Gif:
-                    bytes += animPixels / 2 * Directions.Length * viewCount;
+                    // 実測 0.16 bytes/px/フレーム程度 → 0.25 bytes/px
+                    bytes += animPixels / 4 * Directions.Length * viewCount;
                     break;
                 case CaptureOutputFormat.Mp4:
-                    // VideoBitrateMode.High ≒ 0.3 bit/px/フレーム程度
-                    bytes += animPixels * frames / 25 * viewCount;
+                    // MediaEncoder (High) のビットレートは解像度基準でコンテンツ依存が小さい。
+                    // 実測 0.04 bit/px/フレーム程度 → 0.1 bit/px
+                    bytes += animPixels * frames / 80 * viewCount;
                     break;
                 case CaptureOutputFormat.ProRes422:
-                    // 固定品質 (qScale 2) の実測 + 余裕でおおむね 3 bit/px/フレーム
+                    // 固定品質 (qScale 2) の実測 2.3 bit/px/フレーム程度 → 3 bit/px
                     bytes += animPixels * 3 / 8 * frames * viewCount;
                     break;
             }
 
             return bytes;
+        }
+
+        /// <summary>
+        /// 撮影にかかる時間の概算 (秒)。開発環境での実測スループットに基づく目安で、
+        /// 環境 (GPU/CPU) により前後する。ターゲット 1 体・正方形構図を仮定する。
+        /// </summary>
+        public static double EstimateCaptureSeconds(CaptureSettings settings)
+        {
+            var size = (long)settings.NormalizedImageSize;
+            var renderPixels = (double)size * size;
+            var animPixels = renderPixels / (SuperSampleFactor * SuperSampleFactor);
+            var viewCount = settings.ViewCount;
+            var stillFactor = size <= 2048 ? 4 : 2;
+
+            // 実測ベースのスループット (px/秒)
+            const double RenderRate = 90e6; // 描画 + 読み戻し + 縮小
+            const double PngRate = 35e6; // PNG エンコード
+            const double GifRate = 14e6; // GIF 量子化 + エンコード
+            const double Mp4Rate = 50e6; // H.264 エンコード
+            const double ProResRate = 5e6; // ProRes エンコード
+
+            var stillRendered = renderPixels * stillFactor * stillFactor;
+            var seconds = Directions.Length * viewCount * (stillRendered / RenderRate + renderPixels / PngRate);
+
+            var frames = Mathf.RoundToInt(VideoFrameRate * settings.SecondsPerRotation);
+            switch (settings.format)
+            {
+                case CaptureOutputFormat.Gif:
+                    seconds += Directions.Length * viewCount * animPixels / GifRate;
+                    break;
+                case CaptureOutputFormat.Mp4:
+                    seconds += frames * viewCount * (renderPixels / RenderRate + animPixels / Mp4Rate);
+                    break;
+                case CaptureOutputFormat.ProRes422:
+                    seconds += frames * viewCount * (renderPixels / RenderRate + animPixels / ProResRate);
+                    break;
+            }
+
+            return seconds;
         }
 
         /// <summary>

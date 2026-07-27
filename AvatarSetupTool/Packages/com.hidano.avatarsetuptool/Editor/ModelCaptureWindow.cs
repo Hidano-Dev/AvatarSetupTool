@@ -297,9 +297,11 @@ namespace Hidano.AvatarSetupTool.Editor
                     ? " GIF は全フレームを保持してから書き出すため、1 フレームずつ逐次エンコードする MP4 や ProRes より多めになります。"
                     : string.Empty;
                 var output = ModelCaptureService.EstimateOutputBytes(settings);
+                var duration = ModelCaptureService.EstimateCaptureSeconds(settings);
                 EditorGUILayout.HelpBox(
                     $"推定メモリ使用量: 約 {requiredMb} MB (正方形想定の概算。横に広いモデルでは増加し、実行前に再チェックされます)。{note}\n"
-                    + $"推定出力サイズ: 約 {FormatSize(output)} (ターゲット 1 体あたりの概算)",
+                    + $"推定出力サイズ: 約 {FormatSize(output)}・出力時間: 約 {FormatDuration(duration)}"
+                    + " (ターゲット 1 体あたりの概算。時間は環境により前後します)",
                     MessageType.Info);
             }
         }
@@ -410,6 +412,17 @@ namespace Hidano.AvatarSetupTool.Editor
             return bytes >= 1L << 30
                 ? $"{bytes / (double)(1L << 30):F1} GB"
                 : $"{bytes / (1L << 20)} MB";
+        }
+
+        private static string FormatDuration(double seconds)
+        {
+            if (seconds < 90.0)
+            {
+                return $"{Mathf.Max(5, Mathf.CeilToInt((float)seconds / 5f) * 5)} 秒";
+            }
+
+            var minutes = seconds / 60.0;
+            return minutes < 10.0 ? $"{minutes:F1} 分" : $"{Mathf.CeilToInt((float)minutes)} 分";
         }
     }
 }
