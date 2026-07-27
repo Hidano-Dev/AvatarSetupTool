@@ -172,8 +172,8 @@ namespace Hidano.AvatarSetupTool.Editor
         }
 
         /// <summary>
-        /// MP4 選択時、動画解像度が H.264 エンコーダの上限を確実に超える設定なら警告する。
-        /// 横に広いモデルで幅だけ超えるケースは実行前チェック (Service 側) が検出する。
+        /// MP4 選択時、動画解像度が H.264 エンコーダの上限を超える (または超えうる) 設定なら警告する。
+        /// 確実に超える場合は撮影開始ボタンも無効化される (<see cref="ValidationError"/>)。
         /// </summary>
         private void DrawH264LimitWarning()
         {
@@ -183,17 +183,24 @@ namespace Hidano.AvatarSetupTool.Editor
             }
 
             var videoSize = (long)(settings.NormalizedImageSize / ModelCaptureService.SuperSampleFactor);
-            if (videoSize <= ModelCaptureService.H264MaxDimension
-                && videoSize * videoSize <= ModelCaptureService.H264MaxPixels)
+            var exceeds = ModelCaptureService.ExceedsH264Limit(settings.NormalizedImageSize);
+            // 全身の動画は横に広いモデルで幅が videoSize より広がるため、
+            // 幅が 2 倍で上限に達する解像度からは条件付きの警告を出す
+            var mayExceed = !exceeds && videoSize * 2 >= ModelCaptureService.H264MaxDimension;
+            if (!exceeds && !mayExceed)
             {
                 return;
             }
 
             EditorGUILayout.HelpBox(
-                $"この解像度では動画が {videoSize}px 四方以上になり、MP4 (H.264) エンコーダの上限"
-                + " (4096x2304 相当) を超えるため撮影に失敗します。"
-                + "ProRes 422 (MOV) に切り替えるか、解像度を下げてください。",
-                MessageType.Warning);
+                exceeds
+                    ? $"この解像度では動画が {videoSize}px 四方以上になり、MP4 (H.264) エンコーダの上限"
+                        + " (4096x2304 相当) を超えるため撮影できません。"
+                        + "ProRes 422 (MOV) に切り替えるか、解像度を下げてください。"
+                    : "横に広いモデルでは全身動画の幅が自動拡張され、MP4 (H.264) エンコーダの上限"
+                        + " (4096x2304 相当) を超えることがあります。その場合は実行前チェックで中断されます。"
+                        + "確実に出力するには ProRes 422 (MOV) を使ってください。",
+                exceeds ? MessageType.Error : MessageType.Warning);
             using (new EditorGUILayout.HorizontalScope())
             {
                 GUILayout.FlexibleSpace();
@@ -289,8 +296,10 @@ namespace Hidano.AvatarSetupTool.Editor
                 var note = settings.format == CaptureOutputFormat.Gif
                     ? " GIF は全フレームを保持してから書き出すため、1 フレームずつ逐次エンコードする MP4 や ProRes より多めになります。"
                     : string.Empty;
+                var output = ModelCaptureService.EstimateOutputBytes(settings);
                 EditorGUILayout.HelpBox(
-                    $"推定メモリ使用量: 約 {requiredMb} MB (正方形想定の概算。横に広いモデルでは増加し、実行前に再チェックされます)。{note}",
+                    $"推定メモリ使用量: 約 {requiredMb} MB (正方形想定の概算。横に広いモデルでは増加し、実行前に再チェックされます)。{note}\n"
+                    + $"推定出力サイズ: 約 {FormatSize(output)} (ターゲット 1 体あたりの概算)",
                     MessageType.Info);
             }
         }
@@ -312,6 +321,12 @@ namespace Hidano.AvatarSetupTool.Editor
                 return $"出力先フォルダが存在しません: {settings.outputRoot}";
             }
 
+            if (settings.format == CaptureOutputFormat.Mp4
+                && ModelCaptureService.ExceedsH264Limit(settings.NormalizedImageSize))
+            {
+                return "MP4 (H.264) では出力できない解像度です。ProRes 422 (MOV) に切り替えるか、解像度を下げてください。";
+            }
+
             return null;
         }
 
@@ -325,7 +340,13 @@ namespace Hidano.AvatarSetupTool.Editor
             try
             {
                 var result = ModelCaptureService.Capture(target, settings,
-                    (text, ratio) => EditorUtility.DisplayProgressBar("Capture Model Images", text, ratio));
+                    (text, ratio) => EditorUtility.DisplayCancelableProgressBar("Capture Model Images", text, ratio));
+                if (result.Canceled)
+                {
+                    ShowNotification(new GUIContent("撮影をキャンセルしました"));
+                    return;
+                }
+
                 if (!result.Success)
                 {
                     EditorUtility.DisplayDialog("Capture Model Images", result.Error, "OK");

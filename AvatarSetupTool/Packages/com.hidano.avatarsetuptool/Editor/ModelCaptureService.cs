@@ -12,10 +12,13 @@ namespace Hidano.AvatarSetupTool.Editor
     public sealed class CaptureResult
     {
         public bool Success;
+        public bool Canceled;
         public string Error;
         public string OutputDirectory;
 
         public static CaptureResult Fail(string error) => new CaptureResult { Error = error };
+
+        public static CaptureResult Cancel() => new CaptureResult { Canceled = true, Error = "キャンセルされました。" };
     }
 
     /// <summary>
@@ -51,9 +54,13 @@ namespace Hidano.AvatarSetupTool.Editor
         private static readonly Color32 BackgroundColor = new Color32(184, 184, 184, 255);
         private static readonly Color32 SubLineColor = new Color32(164, 164, 164, 255);
         private static readonly Color32 MainLineColor = new Color32(128, 128, 128, 255);
-        private const float SubLineAlpha = 0.6f; // 10cm 線は半透明にして 1m の主線と視覚的に区別する
         private const float SubLineSpacing = 0.1f; // 10cm 間隔の細線。10 本ごと (1m) に主線
         private const int SubLinesPerMainLine = 10;
+
+        // 10cm 線は破線にして 1m の実線の主線と区別する。周期をグリッド間隔の約数にすることで
+        // 破線の点が必ず 5cm の倍数の位置 (= 線どうしの交点を含む) に来るようにする
+        private const float SubLineDashPeriod = 0.05f;
+        private const float SubLineDashLength = 0.025f;
 
         /// <summary>
         /// カメラは -Z 側に固定し、モデル側を Y 回転させて 8 方向を撮る。
@@ -97,10 +104,11 @@ namespace Hidano.AvatarSetupTool.Editor
         }
 
         /// <summary>
-        /// キャプチャを実行する。progress には表示用テキストと 0〜1 の進捗率が渡される。
+        /// キャプチャを実行する。progress には表示用テキストと 0〜1 の進捗率が渡され、
+        /// true を返すとキャンセル要求として撮影を中断する (書きかけの動画は削除される)。
         /// </summary>
         public static CaptureResult Capture(
-            GameObject source, CaptureSettings settings, Action<string, float> progress = null)
+            GameObject source, CaptureSettings settings, Func<string, float, bool> progress = null)
         {
             if (source == null)
             {
@@ -197,7 +205,10 @@ namespace Hidano.AvatarSetupTool.Editor
                         {
                             target.transform.rotation = Quaternion.Euler(0f, yaw, 0f);
 
-                            progress?.Invoke($"{captureName}: {dirName}", step / (float)total);
+                            if (CancelRequested(progress, $"{captureName}: {dirName}", step / (float)total))
+                            {
+                                return CaptureResult.Cancel();
+                            }
 
                             var makeGifFrame = settings.format == CaptureOutputFormat.Gif;
 
@@ -232,7 +243,11 @@ namespace Hidano.AvatarSetupTool.Editor
 
                         if (settings.format == CaptureOutputFormat.Gif)
                         {
-                            progress?.Invoke($"{captureName}: GIF を書き出し中", step / (float)total);
+                            if (CancelRequested(progress, $"{captureName}: GIF を書き出し中", step / (float)total))
+                            {
+                                return CaptureResult.Cancel();
+                            }
+
                             if (settings.CaptureFull)
                             {
                                 GifWriter.Write(
@@ -262,9 +277,13 @@ namespace Hidano.AvatarSetupTool.Editor
                                 ? Path.Combine(outputDir, ResolveName(videoPattern, null, "face",
                                     faceView.AnimWidth, faceView.AnimHeight) + extension)
                                 : null;
-                            CaptureTurntableVideos(
+                            var canceled = CaptureTurntableVideos(
                                 preview, target, backdrop, fullView, faceView, settings.format,
                                 fullPath, facePath, captureName, videoFrameCount, total, progress, ref step);
+                            if (canceled)
+                            {
+                                return CaptureResult.Cancel();
+                            }
                         }
                     }
                 }
@@ -297,8 +316,11 @@ namespace Hidano.AvatarSetupTool.Editor
         {
             var viewCount = viewMode == CaptureViewMode.Both ? 2 : 1;
             var renderPixels = (long)imageSize * imageSize;
-            // RT + 読み戻し Texture2D + GetPixels32 + PNG エンコードバッファ
-            var bytes = renderPixels * 4 * 4;
+            // RT + 読み戻し Texture2D + GetPixels32 + PNG エンコードバッファ、
+            // 加えてスーパーサンプリングのタイル 1 枚分の読み戻し
+            var stillFactor = imageSize <= 2048 ? 4 : 2;
+            var tileSide = (long)Mathf.Min(imageSize * stillFactor, SystemInfo.maxTextureSize);
+            var bytes = renderPixels * 4 * 4 + tileSide * tileSide * 4 * 2;
             var animPixels = renderPixels / (SuperSampleFactor * SuperSampleFactor);
             if (format == CaptureOutputFormat.Gif)
             {
@@ -316,6 +338,16 @@ namespace Hidano.AvatarSetupTool.Editor
 
         /// <summary>メモリ見積もりに対して許容する上限 (実装メモリの半分)。</summary>
         public static long MemoryBudgetBytes => (long)SystemInfo.systemMemorySize * 1024 * 1024 / 2;
+
+        /// <summary>
+        /// 正方形構図を仮定しても H.264 の上限を確実に超える解像度設定かどうか (UI の事前判定用)。
+        /// 横に広いモデルで幅だけ超えるケースは実行前チェック (<see cref="Capture"/> 内) が検出する。
+        /// </summary>
+        public static bool ExceedsH264Limit(int normalizedImageSize)
+        {
+            long videoSize = normalizedImageSize / SuperSampleFactor;
+            return videoSize > H264MaxDimension || videoSize * videoSize > H264MaxPixels;
+        }
 
         /// <summary>
         /// 出力ファイル合計サイズの概算 (バイト)。ディスク空き容量チェック用の目安で、
@@ -463,7 +495,9 @@ namespace Hidano.AvatarSetupTool.Editor
                     }
 
                     var renderPixels = (long)view.RenderWidth * view.RenderHeight;
-                    peak = Math.Max(peak, renderPixels * 4 * 4);
+                    // PNG バッファ類 + スーパーサンプリングのタイル 1 枚分の読み戻し
+                    peak = Math.Max(peak,
+                        renderPixels * 4 * 4 + TilePixels(view, StillSuperSample(view)) * 4 * 2);
                     animPixels += (long)view.AnimWidth * view.AnimHeight;
 
                     if (settings.format == CaptureOutputFormat.Mp4
@@ -709,10 +743,9 @@ namespace Hidano.AvatarSetupTool.Editor
                 foreach (var isMainPass in new[] { false, true })
                 {
                     var width = isMainPass ? mainWidth : subWidth;
-                    var color = GridLineColor(
-                        isMainPass ? MainLineColor : SubLineColor, isMainPass ? 1f : SubLineAlpha);
+                    var color = GridLineColor(isMainPass ? MainLineColor : SubLineColor);
 
-                    // 縦線 (x = n * 0.1m)
+                    // 縦線 (x = n * 0.1m)。10cm の細線は破線
                     for (var i = Mathf.CeilToInt(minX / SubLineSpacing);
                         i <= Mathf.FloorToInt(maxX / SubLineSpacing); i++)
                     {
@@ -722,8 +755,16 @@ namespace Hidano.AvatarSetupTool.Editor
                         }
 
                         var x = i * SubLineSpacing;
-                        AddQuad(vertices, triangles, colors, color, z,
-                            x - width / 2f, minY, x + width / 2f, maxY);
+                        if (isMainPass)
+                        {
+                            AddQuad(vertices, triangles, colors, color, z,
+                                x - width / 2f, minY, x + width / 2f, maxY);
+                        }
+                        else
+                        {
+                            AddDashes(vertices, triangles, colors, color, z,
+                                vertical: true, x, width, minY, maxY);
+                        }
                     }
 
                     // 横線 (y = n * 0.1m)。y=0 の床線も主線になる
@@ -736,8 +777,16 @@ namespace Hidano.AvatarSetupTool.Editor
                         }
 
                         var y = i * SubLineSpacing;
-                        AddQuad(vertices, triangles, colors, color, z,
-                            minX, y - width / 2f, maxX, y + width / 2f);
+                        if (isMainPass)
+                        {
+                            AddQuad(vertices, triangles, colors, color, z,
+                                minX, y - width / 2f, maxX, y + width / 2f);
+                        }
+                        else
+                        {
+                            AddDashes(vertices, triangles, colors, color, z,
+                                vertical: false, y, width, minX, maxX);
+                        }
                     }
                 }
 
@@ -768,13 +817,45 @@ namespace Hidano.AvatarSetupTool.Editor
             }
 
             /// <summary>
+            /// 破線を追加する。点は座標 0 を基準に <see cref="SubLineDashPeriod"/> ごとに置かれるため、
+            /// どの線でも点の位置がワールド座標で揃い、線どうしの交点は必ず点の中心になる。
+            /// vertical が真なら linePos は x 座標で from..to は y の範囲、偽ならその逆。
+            /// </summary>
+            private static void AddDashes(
+                List<Vector3> vertices, List<int> triangles, List<Color32> colors, Color32 color,
+                float z, bool vertical, float linePos, float width, float from, float to)
+            {
+                for (var i = Mathf.CeilToInt((from - SubLineDashLength / 2f) / SubLineDashPeriod);
+                    i <= Mathf.FloorToInt((to + SubLineDashLength / 2f) / SubLineDashPeriod); i++)
+                {
+                    var center = i * SubLineDashPeriod;
+                    var start = Mathf.Max(from, center - SubLineDashLength / 2f);
+                    var end = Mathf.Min(to, center + SubLineDashLength / 2f);
+                    if (end <= start)
+                    {
+                        continue;
+                    }
+
+                    if (vertical)
+                    {
+                        AddQuad(vertices, triangles, colors, color, z,
+                            linePos - width / 2f, start, linePos + width / 2f, end);
+                    }
+                    else
+                    {
+                        AddQuad(vertices, triangles, colors, color, z,
+                            start, linePos - width / 2f, end, linePos + width / 2f);
+                    }
+                }
+            }
+
+            /// <summary>
             /// 頂点カラーを描画用に変換する。Sprites/Default は頂点カラーを色空間変換せずに
             /// そのまま使うため、リニア色空間では sRGB 値をリニアへ変換してから渡さないと
             /// 線が明るく化けてしまう (10cm 線が背景より明るくなり、1m の主線が背景と
-            /// ほぼ同じ値になって消える)。また同シェーダは乗算済みアルファ
-            /// (Blend One OneMinusSrcAlpha) なので RGB にアルファを掛けておく。
+            /// ほぼ同じ値になって消える)。
             /// </summary>
-            private static Color32 GridLineColor(Color32 srgb, float alpha)
+            private static Color32 GridLineColor(Color32 srgb)
             {
                 var color = (Color)srgb;
                 if (QualitySettings.activeColorSpace == ColorSpace.Linear)
@@ -782,7 +863,7 @@ namespace Hidano.AvatarSetupTool.Editor
                     color = color.linear;
                 }
 
-                return new Color(color.r * alpha, color.g * alpha, color.b * alpha, alpha);
+                return color;
             }
 
             private static void AddQuad(
@@ -808,22 +889,34 @@ namespace Hidano.AvatarSetupTool.Editor
             }
         }
 
+        /// <summary>progress がキャンセルを要求したら true を返す (進捗表示を兼ねる)。</summary>
+        private static bool CancelRequested(Func<string, float, bool> progress, string text, float ratio)
+        {
+            return progress != null && progress(text, ratio);
+        }
+
         /// <summary>
         /// モデルを連続回転させながらターンテーブル動画 (MP4 / ProRes MOV) を書き出す。
         /// 構図は ComputeViews が返した固定構図をそのまま使う。パスが null の構図はスキップする。
+        /// キャンセルされた場合は書きかけの動画ファイルを削除して true を返す。
         /// </summary>
-        private static void CaptureTurntableVideos(
+        private static bool CaptureTurntableVideos(
             PreviewRenderUtility preview, GameObject target, GridBackdrop backdrop,
             ViewSpec fullView, ViewSpec faceView, CaptureOutputFormat format, string fullPath, string facePath,
-            string captureName, int frameCount, int total, Action<string, float> progress, ref int step)
+            string captureName, int frameCount, int total, Func<string, float, bool> progress, ref int step)
         {
             var label = format == CaptureOutputFormat.Mp4 ? "MP4" : "ProRes";
+            var canceled = false;
             using (var fullWriter = fullPath == null ? null : CreateVideoWriter(format, fullPath, fullView))
             using (var faceWriter = facePath == null ? null : CreateVideoWriter(format, facePath, faceView))
             {
                 for (var i = 0; i < frameCount; i++)
                 {
-                    progress?.Invoke($"{captureName}: {label} {i + 1}/{frameCount}", step / (float)total);
+                    if (CancelRequested(progress, $"{captureName}: {label} {i + 1}/{frameCount}", step / (float)total))
+                    {
+                        canceled = true;
+                        break;
+                    }
 
                     // PNG/GIF と同じく、正面から左向きへ回転する向き (ヨー角の増加方向)
                     var yaw = Directions[0].Yaw + 360f * i / frameCount;
@@ -843,6 +936,22 @@ namespace Hidano.AvatarSetupTool.Editor
                         step++;
                     }
                 }
+            }
+
+            if (canceled)
+            {
+                DeleteIfExists(fullPath);
+                DeleteIfExists(facePath);
+            }
+
+            return canceled;
+        }
+
+        private static void DeleteIfExists(string path)
+        {
+            if (path != null && File.Exists(path))
+            {
+                File.Delete(path);
             }
         }
 
@@ -867,40 +976,122 @@ namespace Hidano.AvatarSetupTool.Editor
         private static void AddVideoFrame(PreviewRenderUtility preview, IVideoFrameWriter writer, ViewSpec view)
         {
             var texture = RenderView(preview, view);
-            writer.AddFrame(Downscale(texture, view.AnimWidth, view.AnimHeight, topDown: false));
+            var pixels = texture.GetPixels32();
             Object.DestroyImmediate(texture);
+            writer.AddFrame(Downscale(pixels, view.RenderWidth, view.AnimWidth, view.AnimHeight, topDown: false));
         }
 
         /// <summary>
-        /// 1 方向分を高解像度で描画して PNG に保存し、makeGifFrame が真なら
+        /// 1 方向分をスーパーサンプリング付きで描画して PNG に保存し、makeGifFrame が真なら
         /// 同じ描画結果を GIF 用に縮小したフレームを返す (描画は 1 回で共用する)。
         /// </summary>
         private static Color32[] CaptureShot(
             PreviewRenderUtility preview, ViewSpec view, string filePath, bool makeGifFrame)
         {
-            var texture = RenderView(preview, view);
+            var pixels = RenderStill(preview, view);
+            var texture = new Texture2D(view.RenderWidth, view.RenderHeight, TextureFormat.RGB24, false);
+            texture.SetPixels32(pixels);
             File.WriteAllBytes(filePath, texture.EncodeToPNG());
-            var gifFrame = makeGifFrame ? Downscale(texture, view.AnimWidth, view.AnimHeight, topDown: true) : null;
             Object.DestroyImmediate(texture);
-            return gifFrame;
+            return makeGifFrame
+                ? Downscale(pixels, view.RenderWidth, view.AnimWidth, view.AnimHeight, topDown: true)
+                : null;
         }
 
         /// <summary>
-        /// キャプチャ画像をアニメーション解像度へボックス平均で縮小する (スーパーサンプリングを兼ねる)。
-        /// GetPixels32 は下端の行から始まる (ボトムアップ)。GIF はトップダウンの行順が
-        /// 必要なため topDown 指定で上下反転し、MP4 (SetPixels32) はそのままの行順で返す。
+        /// PNG 用のスーパーサンプリング倍率。プレビュー描画は MSAA もポストプロセス AA も
+        /// 効かないため、倍率分だけ高解像度で描画してボックス平均で縮小しアンチエイリアスにする。
+        /// 低解像度ほど高い倍率を使い、GPU メモリの目安を超える場合は倍率を下げる。
         /// </summary>
-        private static Color32[] Downscale(Texture2D texture, int destWidth, int destHeight, bool topDown)
+        private static int StillSuperSample(ViewSpec view)
         {
-            const int factor = SuperSampleFactor;
-            const int samples = factor * factor;
-            var sourceWidth = texture.width;
-            var source = texture.GetPixels32();
-            var result = new Color32[destWidth * destHeight];
-            for (var y = 0; y < destHeight; y++)
+            var largest = Mathf.Max(view.RenderWidth, view.RenderHeight);
+            var factor = largest <= 2048 ? 4 : 2;
+
+            // タイル 1 枚あたり float16 カラー + 深度でおよそ 12 bytes/px。VRAM の半分を目安にする
+            var budget = (long)SystemInfo.graphicsMemorySize * 1024 * 1024 / 2;
+            while (factor > 1 && TilePixels(view, factor) * 12 > budget)
             {
-                var destY = topDown ? destHeight - 1 - y : y;
-                for (var x = 0; x < destWidth; x++)
+                factor /= 2;
+            }
+
+            return factor;
+        }
+
+        /// <summary>倍率適用後のタイル 1 枚のピクセル数 (メモリ見積もり用)。</summary>
+        private static long TilePixels(ViewSpec view, int factor)
+        {
+            var tileWidth = view.RenderWidth * factor / TileCount(view.RenderWidth * factor, factor);
+            var tileHeight = view.RenderHeight * factor / TileCount(view.RenderHeight * factor, factor);
+            return (long)tileWidth * tileHeight;
+        }
+
+        /// <summary>
+        /// 一辺をテクスチャ上限内に収めるための分割数。factor の約数 (2 の冪) から選ぶので
+        /// 分割後の辺長は必ず整数かつダウンスケール境界に揃う。
+        /// </summary>
+        private static int TileCount(int stillSize, int factor)
+        {
+            for (var tiles = 1; tiles < factor; tiles *= 2)
+            {
+                if (stillSize / tiles <= SystemInfo.maxTextureSize)
+                {
+                    return tiles;
+                }
+            }
+
+            return factor;
+        }
+
+        /// <summary>
+        /// 静止画 1 枚をスーパーサンプリング付きで描画し、出力解像度のピクセル (ボトムアップ行順)
+        /// を返す。倍率適用後のサイズがテクスチャ上限を超える場合は、正射影カメラを
+        /// ずらしながらタイル状に分割描画する (正射影なので分割しても結果は一致する)。
+        /// </summary>
+        private static Color32[] RenderStill(PreviewRenderUtility preview, ViewSpec view)
+        {
+            var factor = StillSuperSample(view);
+            var width = view.RenderWidth;
+            var height = view.RenderHeight;
+            var result = new Color32[width * height];
+            var tilesX = TileCount(width * factor, factor);
+            var tilesY = TileCount(height * factor, factor);
+            var blockWidth = width / tilesX; // RenderWidth / RenderHeight は 4 の倍数なので割り切れる
+            var blockHeight = height / tilesY;
+            var halfWidth = view.OrthoSize * width / height;
+
+            for (var ty = 0; ty < tilesY; ty++)
+            {
+                for (var tx = 0; tx < tilesX; tx++)
+                {
+                    var tileOrtho = view.OrthoSize / tilesY;
+                    var tileHalfWidth = halfWidth / tilesX;
+                    var tileCenter = new Vector3(
+                        view.Center.x - halfWidth + (2 * tx + 1) * tileHalfWidth,
+                        view.Center.y - view.OrthoSize + (2 * ty + 1) * tileOrtho,
+                        view.Center.z);
+                    var texture = RenderView(preview, tileCenter, tileOrtho, view.DepthExtent,
+                        blockWidth * factor, blockHeight * factor);
+                    DownscaleInto(texture.GetPixels32(), blockWidth * factor, factor,
+                        result, width, tx * blockWidth, ty * blockHeight, blockWidth, blockHeight);
+                    Object.DestroyImmediate(texture);
+                }
+            }
+
+            return result;
+        }
+
+        /// <summary>
+        /// source (ボトムアップ行順) をボックス平均で 1/factor に縮小し、dest の指定位置へ書き込む。
+        /// </summary>
+        private static void DownscaleInto(
+            Color32[] source, int sourceWidth, int factor,
+            Color32[] dest, int destStride, int destX, int destY, int blockWidth, int blockHeight)
+        {
+            var samples = factor * factor;
+            for (var y = 0; y < blockHeight; y++)
+            {
+                for (var x = 0; x < blockWidth; x++)
                 {
                     var r = 0;
                     var g = 0;
@@ -917,11 +1108,36 @@ namespace Hidano.AvatarSetupTool.Editor
                         }
                     }
 
-                    result[destY * destWidth + x] = new Color32(
+                    dest[(destY + y) * destStride + destX + x] = new Color32(
                         (byte)((r + samples / 2) / samples),
                         (byte)((g + samples / 2) / samples),
                         (byte)((b + samples / 2) / samples),
                         255);
+                }
+            }
+        }
+
+        /// <summary>
+        /// キャプチャ画像をアニメーション解像度へボックス平均で縮小する (スーパーサンプリングを兼ねる)。
+        /// source は下端の行から始まる (ボトムアップ)。GIF はトップダウンの行順が
+        /// 必要なため topDown 指定で上下反転し、MP4 (SetPixels32) はそのままの行順で返す。
+        /// </summary>
+        private static Color32[] Downscale(
+            Color32[] source, int sourceWidth, int destWidth, int destHeight, bool topDown)
+        {
+            var factor = sourceWidth / destWidth;
+            var result = new Color32[destWidth * destHeight];
+            DownscaleInto(source, sourceWidth, factor, result, destWidth, 0, 0, destWidth, destHeight);
+            if (topDown)
+            {
+                var row = new Color32[destWidth];
+                for (var y = 0; y < destHeight / 2; y++)
+                {
+                    var top = y * destWidth;
+                    var bottom = (destHeight - 1 - y) * destWidth;
+                    Array.Copy(result, top, row, 0, destWidth);
+                    Array.Copy(result, bottom, result, top, destWidth);
+                    Array.Copy(row, 0, result, bottom, destWidth);
                 }
             }
 
