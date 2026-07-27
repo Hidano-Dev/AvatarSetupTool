@@ -101,6 +101,12 @@ namespace Hidano.AvatarSetupTool.Editor
                 new GUIContent("撮影範囲", "全身と顔アップのどちらの構図を撮影するか"),
                 (int)settings.viewMode, ViewModeLabels);
 
+            settings.includeDebugInfo = EditorGUILayout.Toggle(
+                new GUIContent("デバッグ情報を記載",
+                    "背景の左下に出所情報 (元 FBX のエクスポート日時・ツール・元ファイル、"
+                    + "Prefab の場合は git の直近コミット) を描画し、PNG のメタデータ (iTXt) にも埋め込みます"),
+                settings.includeDebugInfo);
+
             DrawResolution();
             DrawH264LimitWarning();
 
@@ -301,7 +307,7 @@ namespace Hidano.AvatarSetupTool.Editor
                 EditorGUILayout.HelpBox(
                     $"推定メモリ使用量: 約 {requiredMb} MB (正方形想定の概算。横に広いモデルでは増加し、実行前に再チェックされます)。{note}\n"
                     + $"推定出力サイズ: 約 {FormatSize(output)}・出力時間: 約 {FormatDuration(duration)}"
-                    + " (ターゲット 1 体あたりの概算。時間は環境により前後します)",
+                    + " (ターゲット 1 体あたりの概算。時間は撮影のたびに実測へ自動較正されます)",
                     MessageType.Info);
             }
         }

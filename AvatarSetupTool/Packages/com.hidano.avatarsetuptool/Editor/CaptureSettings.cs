@@ -62,6 +62,12 @@ namespace Hidano.AvatarSetupTool.Editor
         /// <summary>ファイル名の &lt;Take&gt; に使う連番。撮影が成功するたびに +1 される。</summary>
         public int take = 1;
 
+        /// <summary>
+        /// 背景の左下へ出所デバッグ情報 (元 FBX のエクスポート情報や Prefab の git コミット) を
+        /// 描画し、PNG のメタデータ (iTXt) にも埋め込む。
+        /// </summary>
+        public bool includeDebugInfo;
+
         public bool CaptureFull => viewMode != CaptureViewMode.FaceOnly;
 
         public bool CaptureFace => viewMode != CaptureViewMode.FullOnly;

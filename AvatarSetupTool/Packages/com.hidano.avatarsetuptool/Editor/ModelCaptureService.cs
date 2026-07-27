@@ -52,15 +52,16 @@ namespace Hidano.AvatarSetupTool.Editor
         internal const int SuperSampleFactor = 2; // PNG 解像度に対する動画の縮小率 (ボックス平均 = SSAA)
 
         private static readonly Color32 BackgroundColor = new Color32(184, 184, 184, 255);
-        private static readonly Color32 SubLineColor = new Color32(164, 164, 164, 255);
-        private static readonly Color32 MainLineColor = new Color32(128, 128, 128, 255);
+        private static readonly Color32 SubLineColor = new Color32(144, 144, 144, 255);
+        private static readonly Color32 MainLineColor = new Color32(96, 96, 96, 255);
+        private static readonly Color32 DebugTextColor = new Color32(72, 72, 72, 255);
         private const float SubLineSpacing = 0.1f; // 10cm 間隔の細線。10 本ごと (1m) に主線
         private const int SubLinesPerMainLine = 10;
 
         // 10cm 線は破線にして 1m の実線の主線と区別する。周期をグリッド間隔の約数にすることで
-        // 破線の点が必ず 2cm の倍数の位置 (= 線どうしの交点を含む) に来るようにする
-        private const float SubLineDashPeriod = 0.02f;
-        private const float SubLineDashLength = 0.01f;
+        // 破線の点が必ず 1cm の倍数の位置 (= 線どうしの交点を含む) に来るようにする
+        private const float SubLineDashPeriod = 0.01f;
+        private const float SubLineDashLength = 0.005f;
 
         /// <summary>
         /// カメラは -Z 側に固定し、モデル側を Y 回転させて 8 方向を撮る。
@@ -159,12 +160,17 @@ namespace Hidano.AvatarSetupTool.Editor
                 var outputDir = UniqueOutputDirectory(settings.outputRoot, CaptureFileName.Sanitize(modelName));
                 Directory.CreateDirectory(outputDir);
 
+                var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+
                 var allRenderers = instance.GetComponentsInChildren<Renderer>(true);
 
                 // SRP では最初のレンダリングが空になることがあるため、1 回捨てレンダリングする
                 Warmup(preview, CalculateBounds(instance));
 
                 var timestamp = DateTime.Now;
+                var sourceLines = settings.includeDebugInfo
+                    ? CaptureDebugInfo.CollectSourceLines(source)
+                    : null;
                 var bothViews = settings.viewMode == CaptureViewMode.Both;
                 var stillPattern = EffectivePattern(
                     settings.fileNamePattern, targets.Length > 1, forStill: true, bothViews: bothViews);
@@ -197,7 +203,16 @@ namespace Hidano.AvatarSetupTool.Editor
                             pattern, modelName, captureName, direction, viewLabel,
                             width, height, timestamp, settings.take);
 
-                    using (var backdrop = new GridBackdrop(preview, fullView, faceView))
+                    string debugText = null;
+                    if (sourceLines != null)
+                    {
+                        var debugLines = new List<string>(sourceLines);
+                        debugLines.AddRange(CaptureDebugInfo.CollectFbxLines(animator));
+                        debugLines.Add(CaptureDebugInfo.CapturedLine(timestamp));
+                        debugText = string.Join("\n", debugLines);
+                    }
+
+                    using (var backdrop = new GridBackdrop(preview, fullView, faceView, debugText))
                     {
                         var fullGifFrames = new List<Color32[]>(Directions.Length);
                         var faceGifFrames = new List<Color32[]>(Directions.Length);
@@ -218,7 +233,7 @@ namespace Hidano.AvatarSetupTool.Editor
                                 var fullName = ResolveName(stillPattern, dirName, "full",
                                     fullView.RenderWidth, fullView.RenderHeight);
                                 var fullFrame = CaptureShot(preview, fullView,
-                                    Path.Combine(outputDir, fullName + ".png"), makeGifFrame);
+                                    Path.Combine(outputDir, fullName + ".png"), makeGifFrame, debugText);
                                 step++;
                                 if (makeGifFrame)
                                 {
@@ -232,7 +247,7 @@ namespace Hidano.AvatarSetupTool.Editor
                                 var faceName = ResolveName(stillPattern, dirName, "face",
                                     faceView.RenderWidth, faceView.RenderHeight);
                                 var faceFrame = CaptureShot(preview, faceView,
-                                    Path.Combine(outputDir, faceName + ".png"), makeGifFrame);
+                                    Path.Combine(outputDir, faceName + ".png"), makeGifFrame, debugText);
                                 step++;
                                 if (makeGifFrame)
                                 {
@@ -298,6 +313,7 @@ namespace Hidano.AvatarSetupTool.Editor
                     _ => $"PNG {pngCount} 枚",
                 };
                 Debug.Log($"[AvatarSetupTool] {modelName}: {summary}を保存しました: {outputDir}");
+                UpdateTimeCalibration(stopwatch.Elapsed.TotalSeconds, EstimateSecondsForViews(views, settings));
                 return new CaptureResult { Success = true, OutputDirectory = outputDir };
             }
             finally
@@ -385,43 +401,98 @@ namespace Hidano.AvatarSetupTool.Editor
             return bytes;
         }
 
+        // 実測ベースのスループット (px/秒)。8K 静止画の実測 (Ryzen 9 9900X) で較正。
+        // 静止画の描画レートは SSAA タイルの読み戻し・縮小・GC を含むため動画フレームより遅い
+        private const double StillRenderRate = 50e6; // SSAA 描画 + 読み戻し + 縮小
+        private const double PngEncodeRate = 50e6; // PNG エンコード + 書き込み
+        private const double VideoRenderRate = 90e6; // 動画フレームの描画 + 読み戻し + 縮小
+        private const double GifEncodeRate = 14e6; // GIF 量子化 + エンコード
+        private const double Mp4EncodeRate = 50e6; // H.264 エンコード
+        private const double ProResEncodeRate = 5e6; // ProRes エンコード
+
+        private const string TimeCalibrationPrefsKey = "Hidano.AvatarSetupTool.ModelCapture.TimeCalibration";
+
         /// <summary>
-        /// 撮影にかかる時間の概算 (秒)。開発環境での実測スループットに基づく目安で、
-        /// 環境 (GPU/CPU) により前後する。ターゲット 1 体・正方形構図を仮定する。
+        /// 実測時間 ÷ モデル推定時間の平滑値。撮影が成功するたびに更新され、
+        /// 環境 (CPU/GPU/モデルの重さ) の差を見積もりへ反映する。
+        /// </summary>
+        internal static float TimeCalibrationFactor
+        {
+            get => Mathf.Clamp(EditorPrefs.GetFloat(TimeCalibrationPrefsKey, 1f), 0.25f, 4f);
+            private set => EditorPrefs.SetFloat(TimeCalibrationPrefsKey, Mathf.Clamp(value, 0.25f, 4f));
+        }
+
+        /// <summary>
+        /// 撮影にかかる時間の概算 (秒)。実測スループットに基づく推定へ、過去の撮影の
+        /// 実測から得た較正係数 (<see cref="TimeCalibrationFactor"/>) を掛けて返す。
+        /// ターゲット 1 体・正方形構図を仮定する。
         /// </summary>
         public static double EstimateCaptureSeconds(CaptureSettings settings)
         {
-            var size = (long)settings.NormalizedImageSize;
-            var renderPixels = (double)size * size;
-            var animPixels = renderPixels / (SuperSampleFactor * SuperSampleFactor);
-            var viewCount = settings.ViewCount;
-            var stillFactor = size <= 2048 ? 4 : 2;
+            var animSize = settings.NormalizedImageSize / SuperSampleFactor;
+            var view = new ViewSpec(Vector3.zero, 1f, 0f, animSize, animSize);
+            return EstimateSecondsForViews(new[] { (view, view) }, settings) * TimeCalibrationFactor;
+        }
 
-            // 実測ベースのスループット (px/秒)
-            const double RenderRate = 90e6; // 描画 + 読み戻し + 縮小
-            const double PngRate = 35e6; // PNG エンコード
-            const double GifRate = 14e6; // GIF 量子化 + エンコード
-            const double Mp4Rate = 50e6; // H.264 エンコード
-            const double ProResRate = 5e6; // ProRes エンコード
-
-            var stillRendered = renderPixels * stillFactor * stillFactor;
-            var seconds = Directions.Length * viewCount * (stillRendered / RenderRate + renderPixels / PngRate);
-
+        /// <summary>
+        /// 実際の構図での較正前の時間推定 (秒)。<see cref="EstimateCaptureSeconds"/> と
+        /// 撮影後の較正 (<see cref="UpdateTimeCalibration"/>) が同じモデルを共有する。
+        /// </summary>
+        private static double EstimateSecondsForViews(
+            (ViewSpec Full, ViewSpec Face)[] views, CaptureSettings settings)
+        {
             var frames = Mathf.RoundToInt(VideoFrameRate * settings.SecondsPerRotation);
-            switch (settings.format)
+            var seconds = 0.0;
+            foreach (var (full, face) in views)
             {
-                case CaptureOutputFormat.Gif:
-                    seconds += Directions.Length * viewCount * animPixels / GifRate;
-                    break;
-                case CaptureOutputFormat.Mp4:
-                    seconds += frames * viewCount * (renderPixels / RenderRate + animPixels / Mp4Rate);
-                    break;
-                case CaptureOutputFormat.ProRes422:
-                    seconds += frames * viewCount * (renderPixels / RenderRate + animPixels / ProResRate);
-                    break;
+                foreach (var (view, capture) in new[]
+                {
+                    (full, settings.CaptureFull),
+                    (face, settings.CaptureFace),
+                })
+                {
+                    if (!capture)
+                    {
+                        continue;
+                    }
+
+                    var renderPixels = (double)view.RenderWidth * view.RenderHeight;
+                    var stillFactor = StillSuperSample(view);
+                    var animPixels = (double)view.AnimWidth * view.AnimHeight;
+                    seconds += Directions.Length
+                        * (renderPixels * stillFactor * stillFactor / StillRenderRate
+                            + renderPixels / PngEncodeRate);
+                    switch (settings.format)
+                    {
+                        case CaptureOutputFormat.Gif:
+                            seconds += Directions.Length * animPixels / GifEncodeRate;
+                            break;
+                        case CaptureOutputFormat.Mp4:
+                            seconds += frames * (renderPixels / VideoRenderRate + animPixels / Mp4EncodeRate);
+                            break;
+                        case CaptureOutputFormat.ProRes422:
+                            seconds += frames * (renderPixels / VideoRenderRate + animPixels / ProResEncodeRate);
+                            break;
+                    }
+                }
             }
 
             return seconds;
+        }
+
+        /// <summary>
+        /// 撮影の実測時間で見積もり係数を較正する。短時間の撮影は
+        /// ウォームアップ等の固定コストの比率が大きくノイズになるため無視する。
+        /// </summary>
+        private static void UpdateTimeCalibration(double actualSeconds, double predictedSeconds)
+        {
+            if (actualSeconds < 5.0 || predictedSeconds <= 0.0)
+            {
+                return;
+            }
+
+            var raw = (float)(actualSeconds / predictedSeconds);
+            TimeCalibrationFactor = Mathf.Lerp(TimeCalibrationFactor, raw, 0.5f);
         }
 
         /// <summary>
@@ -719,10 +790,11 @@ namespace Hidano.AvatarSetupTool.Editor
             private readonly GameObject full;
             private readonly GameObject face;
 
-            public GridBackdrop(PreviewRenderUtility preview, ViewSpec fullView, ViewSpec faceView)
+            public GridBackdrop(
+                PreviewRenderUtility preview, ViewSpec fullView, ViewSpec faceView, string debugText = null)
             {
-                full = CreateGridObject(preview, fullView);
-                face = CreateGridObject(preview, faceView);
+                full = CreateGridObject(preview, fullView, debugText);
+                face = CreateGridObject(preview, faceView, debugText);
             }
 
             public void Show(bool showFull)
@@ -759,7 +831,8 @@ namespace Hidano.AvatarSetupTool.Editor
                 Object.DestroyImmediate(go);
             }
 
-            private static GameObject CreateGridObject(PreviewRenderUtility preview, ViewSpec view)
+            private static GameObject CreateGridObject(
+                PreviewRenderUtility preview, ViewSpec view, string debugText)
             {
                 var halfHeight = view.OrthoSize;
                 var halfWidth = view.OrthoSize * view.RenderWidth / view.RenderHeight;
@@ -848,9 +921,51 @@ namespace Hidano.AvatarSetupTool.Editor
                 renderer.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
                 renderer.receiveShadows = false;
 
+                if (!string.IsNullOrEmpty(debugText))
+                {
+                    AddDebugText(go, view, debugText);
+                }
+
                 preview.AddSingleGO(go);
                 go.SetActive(false);
                 return go;
+            }
+
+            /// <summary>
+            /// デバッグ情報テキストを画像左下の背景へ置く。グリッドよりわずかに手前の
+            /// 透明キューに入るためグリッド線の上に描かれ、モデル (不透明) には隠される。
+            /// フォントマテリアルは共有アセットなので Dispose では破棄しない
+            /// (GameObject ごと破棄されるのはテキストの GameObject 自体だけでよい)。
+            /// </summary>
+            private static void AddDebugText(GameObject parent, ViewSpec view, string text)
+            {
+                var go = new GameObject("CaptureDebugText");
+                go.transform.SetParent(parent.transform, false);
+
+                var halfWidth = view.OrthoSize * view.RenderWidth / view.RenderHeight;
+                var margin = view.OrthoSize * 2f * 0.01f;
+                go.transform.position = new Vector3(
+                    view.Center.x - halfWidth + margin,
+                    view.Center.y - view.OrthoSize + margin,
+                    view.Center.z + view.DepthExtent + 0.4f);
+
+                var textMesh = go.AddComponent<TextMesh>();
+                textMesh.font = Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
+                textMesh.anchor = TextAnchor.LowerLeft;
+                textMesh.alignment = TextAlignment.Left;
+                // 行の高さを画像高さの約 1.5% にする。フォントのラスタライズ解像度も
+                // 最終ピクセルサイズへ合わせ、拡大でぼやけないようにする
+                // (TextMesh の行高 ≒ fontSize * characterSize / 10)
+                textMesh.fontSize = Mathf.Clamp(Mathf.RoundToInt(view.RenderHeight * 0.015f), 16, 256);
+                var lineHeight = view.OrthoSize * 2f * 0.015f;
+                textMesh.characterSize = lineHeight * 10f / textMesh.fontSize;
+                textMesh.color = GridLineColor(DebugTextColor);
+                textMesh.text = text;
+
+                var renderer = go.GetComponent<MeshRenderer>();
+                renderer.sharedMaterial = textMesh.font.material;
+                renderer.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
+                renderer.receiveShadows = false;
             }
 
             private static bool IsMainLine(int index)
@@ -1026,14 +1141,22 @@ namespace Hidano.AvatarSetupTool.Editor
         /// <summary>
         /// 1 方向分をスーパーサンプリング付きで描画して PNG に保存し、makeGifFrame が真なら
         /// 同じ描画結果を GIF 用に縮小したフレームを返す (描画は 1 回で共用する)。
+        /// debugText があれば PNG の iTXt メタデータとしても埋め込む。
         /// </summary>
         private static Color32[] CaptureShot(
-            PreviewRenderUtility preview, ViewSpec view, string filePath, bool makeGifFrame)
+            PreviewRenderUtility preview, ViewSpec view, string filePath, bool makeGifFrame,
+            string debugText = null)
         {
             var pixels = RenderStill(preview, view);
             var texture = new Texture2D(view.RenderWidth, view.RenderHeight, TextureFormat.RGB24, false);
             texture.SetPixels32(pixels);
-            File.WriteAllBytes(filePath, texture.EncodeToPNG());
+            var bytes = texture.EncodeToPNG();
+            if (!string.IsNullOrEmpty(debugText))
+            {
+                bytes = PngMetadata.WithText(bytes, "Comment", debugText);
+            }
+
+            File.WriteAllBytes(filePath, bytes);
             Object.DestroyImmediate(texture);
             return makeGifFrame
                 ? Downscale(pixels, view.RenderWidth, view.AnimWidth, view.AnimHeight, topDown: true)

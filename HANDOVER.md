@@ -1,8 +1,12 @@
 # HANDOVER
 
-セッション日: 2026-07-26〜27 / パッケージ: com.hidano.avatarsetuptool 0.5.0 → **0.8.0** (未 publish)
+セッション日: 2026-07-26〜27 / パッケージ: com.hidano.avatarsetuptool 0.5.0 → **0.9.0** (未 publish)
 
 ## 今回やったこと
+
+- **v0.9.0**: 時間見積もりを 8K 実機ベンチで再較正 (SSAA 描画系 90→50 Mpx/s、PNG 35→50 Mpx/s。8K PNG 推定 80 秒→実測 2.5 分の乖離を修正、再現ベンチで 107.8 秒実測 = 新推定 107.4 秒)。さらに撮影実測から EditorPrefs へ較正係数を平滑保存し、次回見積もりへ反映 (実アバターの描画コスト差を吸収)
+- **v0.9.0**: グリッド破線を 2cm→1cm 周期に細分化、細線 164→144・主線 128→96 に濃色化
+- **v0.9.0**: 「デバッグ情報を記載」追加。背景左下へ Source (アセットパス) / Prefab の git 直近コミット / 元 FBX ヘッダ (エクスポート日時・Maya 等ツール・元ファイルのフルパス) / Captured (日時・ユーザー@PC・ツールバージョン) を TextMesh (LegacyRuntime.ttf) で描画し、PNG の iTXt "Comment" にも埋め込む。新規: `FbxHeaderReader.cs` (バイナリ/ASCII FBX ヘッダのみの軽量パーサ、実測数 ms)、`CaptureDebugInfo.cs` (収集 + git 呼び出し)、`PngMetadata.cs` (iTXt 挿入 + CRC32)。(非公開) の実 FBX (Maya 2022) と一時インポートでの FBX 割り出しを検証済み
 
 - **v0.6.0**: ProRes 422 エンコーダを純 C# で自前実装 (`ProResWriter.cs`、SMPTE RDD 36 + QuickTime MOV muxer)。dotnet + ffmpeg round-trip で PSNR 64〜69dB を検証済み
 - **v0.6.0**: メニューを `Tools/Hidano/AvatarSetupTool/Model Capture` へ移動。回転速度ラベルの「/」分割修正。「撮影範囲」(全身のみ/顔のみ/全部) ドロップダウン追加、`<View>` をワイルドカード一覧から削除 (両方撮影時のみ自動補完)
@@ -44,7 +48,7 @@
 
 ## 次にやること
 
-1. **(高) 0.8.0 の publish** — ユーザーの (非公開) プロジェクトはレジストリ (npmjs, scope com.hidano) 経由参照のため、publish しないと修正が届かない
+1. **(高) 0.9.0 の publish** — ユーザーの (非公開) プロジェクトはレジストリ (npmjs, scope com.hidano) 経由参照のため、publish しないと修正が届かない
 2. **(中) コミット** — 今回の変更は未コミット (ユーザー未依頼のため保留中)
 3. (低) 実アバターでの 8K ProRes 実地確認 (時間目安 約 42 分/体。キャンセル可)
 4. (低) ProRes の MOV 4GB 超え対応 (co64) は必要になったら
