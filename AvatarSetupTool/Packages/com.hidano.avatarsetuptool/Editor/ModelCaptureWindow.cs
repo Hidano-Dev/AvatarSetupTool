@@ -102,9 +102,10 @@ namespace Hidano.AvatarSetupTool.Editor
                 (int)settings.viewMode, ViewModeLabels);
 
             settings.includeDebugInfo = EditorGUILayout.Toggle(
-                new GUIContent("デバッグ情報を記載",
-                    "背景の左下に出所情報 (元 FBX のエクスポート日時・ツール・元ファイル、"
-                    + "Prefab の場合は git の直近コミット) を描画し、PNG のメタデータ (iTXt) にも埋め込みます"),
+                new GUIContent("デバッグ情報を記録",
+                    "出所情報 (元 FBX のエクスポート日時・ツール・元ファイル、Prefab の場合は git の直近コミット、"
+                    + "Unity プロジェクト名など) を出力フォルダの debug_info.md に書き出し、"
+                    + "PNG のメタデータ (iTXt) にも埋め込みます"),
                 settings.includeDebugInfo);
 
             DrawResolution();

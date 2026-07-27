@@ -7,15 +7,91 @@ using UnityEngine;
 namespace Hidano.AvatarSetupTool.Editor
 {
     /// <summary>
-    /// キャプチャ画像へ焼き込むデバッグ情報 (モデルの出所) を収集する。
+    /// キャプチャのデバッグ情報 (モデルの出所) を収集し、出力フォルダの md ファイルと
+    /// 各 PNG の iTXt メタデータへ記録する。
     /// - 撮影対象のアセットパス (シーン上のオブジェクトは元プレハブをたどる)
-    /// - 対象が参照する元 FBX のヘッダメタデータ (いつ・どのツール・どのファイルからエクスポートされたか)
     /// - Prefab の場合は git の直近コミット (日時・作者・メッセージ)
+    /// - Unity プロジェクト名
+    /// - ターゲットごとの元 FBX (配下の全 Renderer のメッシュの多数決で特定) と
+    ///   そのヘッダメタデータ (いつ・どのツール・どのファイルからエクスポートされたか)
     /// 取れない項目は黙って省略し、収集の失敗で撮影自体を止めない。
     /// </summary>
     internal static class CaptureDebugInfo
     {
         private const int MaxValueLength = 120;
+
+        /// <summary>
+        /// 全ターゲット分のデバッグ情報を収集して md ファイルへ書き出し、
+        /// 各 PNG の iTXt へ埋め込むターゲットごとのテキストを返す。
+        /// md の書き込みに失敗しても警告ログのみで撮影は続行する。
+        /// </summary>
+        public static string[] CollectAndWriteMarkdown(
+            string mdPath, GameObject source, string modelName, Animator[] targets, DateTime timestamp)
+        {
+            var sourceLines = CollectSourceLines(source);
+            sourceLines.Add(UnityProjectLine());
+            var capturedLine = CapturedLine(timestamp);
+
+            var texts = new string[targets.Length];
+            var sections = new List<(string Name, List<string> Lines)>();
+            for (var t = 0; t < targets.Length; t++)
+            {
+                var fbxLines = CollectFbxLines(targets[t]);
+                sections.Add((targets[t].gameObject.name, fbxLines));
+                var all = new List<string>(sourceLines);
+                all.AddRange(fbxLines);
+                all.Add(capturedLine);
+                texts[t] = string.Join("\n", all);
+            }
+
+            try
+            {
+                WriteMarkdown(mdPath, modelName, sourceLines, sections, capturedLine);
+            }
+            catch (Exception e)
+            {
+                Debug.LogWarning($"[AvatarSetupTool] デバッグ情報の md 書き出しに失敗しました: {e.Message}");
+            }
+
+            return texts;
+        }
+
+        private static void WriteMarkdown(
+            string path, string modelName, List<string> sourceLines,
+            List<(string Name, List<string> Lines)> sections, string capturedLine)
+        {
+            var sb = new System.Text.StringBuilder();
+            sb.AppendLine($"# Capture Debug Info: {modelName}");
+            sb.AppendLine();
+            foreach (var line in sourceLines)
+            {
+                sb.AppendLine("- " + line);
+            }
+
+            sb.AppendLine("- " + capturedLine);
+            foreach (var (name, lines) in sections)
+            {
+                sb.AppendLine();
+                sb.AppendLine("## " + name);
+                sb.AppendLine();
+                foreach (var line in lines)
+                {
+                    sb.AppendLine("- " + line);
+                }
+            }
+
+            File.WriteAllText(path, sb.ToString());
+        }
+
+        /// <summary>Unity プロジェクト名 (プロジェクトフォルダ名。productName が異なる場合は併記)。</summary>
+        public static string UnityProjectLine()
+        {
+            var projectDir = Path.GetFileName(Path.GetDirectoryName(Application.dataPath));
+            var product = PlayerSettings.productName;
+            return "Unity project: " + (string.IsNullOrEmpty(product) || product == projectDir
+                ? projectDir
+                : $"{projectDir} ({product})");
+        }
 
         /// <summary>撮影対象そのもの (アセットパス + Prefab なら git コミット) の情報行。</summary>
         public static List<string> CollectSourceLines(GameObject source)
@@ -51,13 +127,14 @@ namespace Hidano.AvatarSetupTool.Editor
             var lines = new List<string>();
             try
             {
-                var fbxPath = FindModelAssetPath(animator);
+                var (fbxPath, meshCount, totalMeshes) = FindModelAssetPath(animator);
                 if (fbxPath == null)
                 {
+                    lines.Add("FBX: (not found)");
                     return lines;
                 }
 
-                lines.Add("FBX: " + fbxPath);
+                lines.Add($"FBX: {fbxPath} (meshes {meshCount}/{totalMeshes})");
                 var meta = FbxHeaderReader.Read(Path.GetFullPath(fbxPath));
 
                 var exported = FormatTimeStamp(meta) ?? Get(meta, "CreationTime");
@@ -126,43 +203,57 @@ namespace Hidano.AvatarSetupTool.Editor
         }
 
         /// <summary>
-        /// ターゲットが参照するモデルアセット (FBX 等、ModelImporter で読まれたもの) のパス。
-        /// Avatar → SkinnedMeshRenderer のメッシュ → MeshFilter のメッシュの順にたどる。
+        /// ターゲットが参照する元モデルアセット (FBX 等、ModelImporter で読まれたもの) のパス。
+        /// 配下の全 Renderer が使うメッシュのアセットファイルを数え、最も多くのメッシュを
+        /// 保有するモデルアセットを元 FBX とみなす (衣装などの追加 FBX が混ざっていても、
+        /// 本体のメッシュ数が最多のものが選ばれる)。あわせて採用したアセットのメッシュ数と
+        /// 配下の総メッシュ数も返す。
         /// </summary>
-        private static string FindModelAssetPath(Animator animator)
+        private static (string Path, int MeshCount, int TotalMeshes) FindModelAssetPath(Animator animator)
         {
-            var candidates = new List<UnityEngine.Object>();
-            if (animator.avatar != null)
+            var counts = new Dictionary<string, int>();
+            var total = 0;
+            foreach (var renderer in animator.GetComponentsInChildren<Renderer>(true))
             {
-                candidates.Add(animator.avatar);
+                Mesh mesh;
+                if (renderer is SkinnedMeshRenderer skinned)
+                {
+                    mesh = skinned.sharedMesh;
+                }
+                else
+                {
+                    var filter = renderer.GetComponent<MeshFilter>();
+                    mesh = filter == null ? null : filter.sharedMesh;
+                }
+
+                if (mesh == null)
+                {
+                    continue;
+                }
+
+                total++;
+                var path = AssetDatabase.GetAssetPath(mesh);
+                if (string.IsNullOrEmpty(path))
+                {
+                    continue;
+                }
+
+                counts.TryGetValue(path, out var count);
+                counts[path] = count + 1;
             }
 
-            foreach (var renderer in animator.GetComponentsInChildren<SkinnedMeshRenderer>(true))
+            string best = null;
+            var bestCount = 0;
+            foreach (var pair in counts)
             {
-                if (renderer.sharedMesh != null)
+                if (pair.Value > bestCount && AssetImporter.GetAtPath(pair.Key) is ModelImporter)
                 {
-                    candidates.Add(renderer.sharedMesh);
+                    best = pair.Key;
+                    bestCount = pair.Value;
                 }
             }
 
-            foreach (var filter in animator.GetComponentsInChildren<MeshFilter>(true))
-            {
-                if (filter.sharedMesh != null)
-                {
-                    candidates.Add(filter.sharedMesh);
-                }
-            }
-
-            foreach (var candidate in candidates)
-            {
-                var path = AssetDatabase.GetAssetPath(candidate);
-                if (!string.IsNullOrEmpty(path) && AssetImporter.GetAtPath(path) is ModelImporter)
-                {
-                    return path;
-                }
-            }
-
-            return null;
+            return (best, bestCount, total);
         }
 
         /// <summary>

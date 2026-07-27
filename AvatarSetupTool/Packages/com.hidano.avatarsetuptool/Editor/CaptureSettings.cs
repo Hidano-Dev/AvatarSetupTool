@@ -63,8 +63,8 @@ namespace Hidano.AvatarSetupTool.Editor
         public int take = 1;
 
         /// <summary>
-        /// 背景の左下へ出所デバッグ情報 (元 FBX のエクスポート情報や Prefab の git コミット) を
-        /// 描画し、PNG のメタデータ (iTXt) にも埋め込む。
+        /// 出所デバッグ情報 (元 FBX のエクスポート情報や Prefab の git コミットなど) を
+        /// 出力フォルダの debug_info.md へ書き出し、PNG のメタデータ (iTXt) にも埋め込む。
         /// </summary>
         public bool includeDebugInfo;
 

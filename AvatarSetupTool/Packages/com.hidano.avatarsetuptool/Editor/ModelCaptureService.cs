@@ -54,7 +54,6 @@ namespace Hidano.AvatarSetupTool.Editor
         private static readonly Color32 BackgroundColor = new Color32(184, 184, 184, 255);
         private static readonly Color32 SubLineColor = new Color32(144, 144, 144, 255);
         private static readonly Color32 MainLineColor = new Color32(96, 96, 96, 255);
-        private static readonly Color32 DebugTextColor = new Color32(72, 72, 72, 255);
         private const float SubLineSpacing = 0.1f; // 10cm 間隔の細線。10 本ごと (1m) に主線
         private const int SubLinesPerMainLine = 10;
 
@@ -168,9 +167,16 @@ namespace Hidano.AvatarSetupTool.Editor
                 Warmup(preview, CalculateBounds(instance));
 
                 var timestamp = DateTime.Now;
-                var sourceLines = settings.includeDebugInfo
-                    ? CaptureDebugInfo.CollectSourceLines(source)
-                    : null;
+
+                // デバッグ情報は撮影前にターゲット分まとめて収集し、md ファイルとして先に書き出す
+                // (キャンセルしても残った PNG と突き合わせられる)。各 PNG の iTXt にも同じ内容が入る
+                string[] debugTexts = null;
+                if (settings.includeDebugInfo)
+                {
+                    debugTexts = CaptureDebugInfo.CollectAndWriteMarkdown(
+                        Path.Combine(outputDir, "debug_info.md"), source, modelName, targets, timestamp);
+                }
+
                 var bothViews = settings.viewMode == CaptureViewMode.Both;
                 var stillPattern = EffectivePattern(
                     settings.fileNamePattern, targets.Length > 1, forStill: true, bothViews: bothViews);
@@ -203,16 +209,9 @@ namespace Hidano.AvatarSetupTool.Editor
                             pattern, modelName, captureName, direction, viewLabel,
                             width, height, timestamp, settings.take);
 
-                    string debugText = null;
-                    if (sourceLines != null)
-                    {
-                        var debugLines = new List<string>(sourceLines);
-                        debugLines.AddRange(CaptureDebugInfo.CollectFbxLines(animator));
-                        debugLines.Add(CaptureDebugInfo.CapturedLine(timestamp));
-                        debugText = string.Join("\n", debugLines);
-                    }
+                    var debugText = debugTexts?[t];
 
-                    using (var backdrop = new GridBackdrop(preview, fullView, faceView, debugText))
+                    using (var backdrop = new GridBackdrop(preview, fullView, faceView))
                     {
                         var fullGifFrames = new List<Color32[]>(Directions.Length);
                         var faceGifFrames = new List<Color32[]>(Directions.Length);
@@ -790,11 +789,10 @@ namespace Hidano.AvatarSetupTool.Editor
             private readonly GameObject full;
             private readonly GameObject face;
 
-            public GridBackdrop(
-                PreviewRenderUtility preview, ViewSpec fullView, ViewSpec faceView, string debugText = null)
+            public GridBackdrop(PreviewRenderUtility preview, ViewSpec fullView, ViewSpec faceView)
             {
-                full = CreateGridObject(preview, fullView, debugText);
-                face = CreateGridObject(preview, faceView, debugText);
+                full = CreateGridObject(preview, fullView);
+                face = CreateGridObject(preview, faceView);
             }
 
             public void Show(bool showFull)
@@ -831,8 +829,7 @@ namespace Hidano.AvatarSetupTool.Editor
                 Object.DestroyImmediate(go);
             }
 
-            private static GameObject CreateGridObject(
-                PreviewRenderUtility preview, ViewSpec view, string debugText)
+            private static GameObject CreateGridObject(PreviewRenderUtility preview, ViewSpec view)
             {
                 var halfHeight = view.OrthoSize;
                 var halfWidth = view.OrthoSize * view.RenderWidth / view.RenderHeight;
@@ -921,51 +918,9 @@ namespace Hidano.AvatarSetupTool.Editor
                 renderer.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
                 renderer.receiveShadows = false;
 
-                if (!string.IsNullOrEmpty(debugText))
-                {
-                    AddDebugText(go, view, debugText);
-                }
-
                 preview.AddSingleGO(go);
                 go.SetActive(false);
                 return go;
-            }
-
-            /// <summary>
-            /// デバッグ情報テキストを画像左下の背景へ置く。グリッドよりわずかに手前の
-            /// 透明キューに入るためグリッド線の上に描かれ、モデル (不透明) には隠される。
-            /// フォントマテリアルは共有アセットなので Dispose では破棄しない
-            /// (GameObject ごと破棄されるのはテキストの GameObject 自体だけでよい)。
-            /// </summary>
-            private static void AddDebugText(GameObject parent, ViewSpec view, string text)
-            {
-                var go = new GameObject("CaptureDebugText");
-                go.transform.SetParent(parent.transform, false);
-
-                var halfWidth = view.OrthoSize * view.RenderWidth / view.RenderHeight;
-                var margin = view.OrthoSize * 2f * 0.01f;
-                go.transform.position = new Vector3(
-                    view.Center.x - halfWidth + margin,
-                    view.Center.y - view.OrthoSize + margin,
-                    view.Center.z + view.DepthExtent + 0.4f);
-
-                var textMesh = go.AddComponent<TextMesh>();
-                textMesh.font = Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
-                textMesh.anchor = TextAnchor.LowerLeft;
-                textMesh.alignment = TextAlignment.Left;
-                // 行の高さを画像高さの約 1.5% にする。フォントのラスタライズ解像度も
-                // 最終ピクセルサイズへ合わせ、拡大でぼやけないようにする
-                // (TextMesh の行高 ≒ fontSize * characterSize / 10)
-                textMesh.fontSize = Mathf.Clamp(Mathf.RoundToInt(view.RenderHeight * 0.015f), 16, 256);
-                var lineHeight = view.OrthoSize * 2f * 0.015f;
-                textMesh.characterSize = lineHeight * 10f / textMesh.fontSize;
-                textMesh.color = GridLineColor(DebugTextColor);
-                textMesh.text = text;
-
-                var renderer = go.GetComponent<MeshRenderer>();
-                renderer.sharedMaterial = textMesh.font.material;
-                renderer.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
-                renderer.receiveShadows = false;
             }
 
             private static bool IsMainLine(int index)
