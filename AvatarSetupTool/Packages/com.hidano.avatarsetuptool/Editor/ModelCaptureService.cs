@@ -174,7 +174,8 @@ namespace Hidano.AvatarSetupTool.Editor
                 if (settings.includeDebugInfo)
                 {
                     debugTexts = CaptureDebugInfo.CollectAndWriteMarkdown(
-                        Path.Combine(outputDir, "debug_info.md"), source, modelName, targets, timestamp);
+                        Path.Combine(outputDir, "debug_info.md"), source, modelName, targets, timestamp,
+                        settings);
                 }
 
                 var bothViews = settings.viewMode == CaptureViewMode.Both;

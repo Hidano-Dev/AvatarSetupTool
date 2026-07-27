@@ -11,9 +11,11 @@ namespace Hidano.AvatarSetupTool.Editor
     /// 各 PNG の iTXt メタデータへ記録する。
     /// - 撮影対象のアセットパス (シーン上のオブジェクトは元プレハブをたどる)
     /// - Prefab の場合は git の直近コミット (日時・作者・メッセージ)
-    /// - Unity プロジェクト名
+    /// - Unity プロジェクト名 / Unity バージョンとレンダーパイプライン
+    /// - git のブランチと origin URL / 撮影に使った設定
     /// - ターゲットごとの元 FBX (配下の全 Renderer のメッシュの多数決で特定) と
-    ///   そのヘッダメタデータ (いつ・どのツール・どのファイルからエクスポートされたか)
+    ///   そのヘッダメタデータ (いつ・どのツール・どのファイルからエクスポートされたか)、
+    ///   SHA-256 ハッシュ、描画物の規模 (三角形/ボーン/BlendShape/マテリアル/シェーダ)
     /// 取れない項目は黙って省略し、収集の失敗で撮影自体を止めない。
     /// </summary>
     internal static class CaptureDebugInfo
@@ -26,10 +28,14 @@ namespace Hidano.AvatarSetupTool.Editor
         /// md の書き込みに失敗しても警告ログのみで撮影は続行する。
         /// </summary>
         public static string[] CollectAndWriteMarkdown(
-            string mdPath, GameObject source, string modelName, Animator[] targets, DateTime timestamp)
+            string mdPath, GameObject source, string modelName, Animator[] targets, DateTime timestamp,
+            CaptureSettings settings)
         {
             var sourceLines = CollectSourceLines(source);
             sourceLines.Add(UnityProjectLine());
+            sourceLines.Add(UnityVersionLine());
+            sourceLines.AddRange(GitContextLines(source));
+            sourceLines.Add(SettingsLine(settings));
             var capturedLine = CapturedLine(timestamp);
 
             var texts = new string[targets.Length];
@@ -37,6 +43,7 @@ namespace Hidano.AvatarSetupTool.Editor
             for (var t = 0; t < targets.Length; t++)
             {
                 var fbxLines = CollectFbxLines(targets[t]);
+                fbxLines.AddRange(CollectStatsLines(targets[t]));
                 sections.Add((targets[t].gameObject.name, fbxLines));
                 var all = new List<string>(sourceLines);
                 all.AddRange(fbxLines);
@@ -93,6 +100,169 @@ namespace Hidano.AvatarSetupTool.Editor
                 : $"{projectDir} ({product})");
         }
 
+        /// <summary>Unity のバージョンとレンダーパイプライン。</summary>
+        private static string UnityVersionLine()
+        {
+            var pipeline = UnityEngine.Rendering.GraphicsSettings.currentRenderPipeline;
+            string rp;
+            if (pipeline == null)
+            {
+                rp = "Built-in RP";
+            }
+            else
+            {
+                var typeName = pipeline.GetType().Name;
+                rp = typeName.Contains("Universal") ? "URP"
+                    : typeName.Contains("HDRenderPipeline") ? "HDRP"
+                    : typeName;
+            }
+
+            return $"Unity: {Application.unityVersion} ({rp})";
+        }
+
+        /// <summary>
+        /// 撮影対象が属する git リポジトリのブランチ名と origin の URL。
+        /// アセットパスが無い (シーン上のみの) 対象は Unity プロジェクトのリポジトリを見る。
+        /// リポジトリ外なら空を返す。
+        /// </summary>
+        private static List<string> GitContextLines(GameObject source)
+        {
+            var lines = new List<string>();
+            try
+            {
+                var assetPath = FindAssetPath(source);
+                var directory = string.IsNullOrEmpty(assetPath)
+                    ? Path.GetDirectoryName(Application.dataPath)
+                    : Path.GetDirectoryName(Path.GetFullPath(assetPath));
+                var branch = RunGit(directory, "rev-parse --abbrev-ref HEAD")?.Trim();
+                if (string.IsNullOrEmpty(branch))
+                {
+                    return lines;
+                }
+
+                var remote = RunGit(directory, "remote get-url origin")?.Trim();
+                lines.Add("Git: " + branch
+                    + (string.IsNullOrEmpty(remote) ? string.Empty : $" (origin: {remote})"));
+            }
+            catch (Exception)
+            {
+                // git が無い場合などは項目ごと省略
+            }
+
+            return lines;
+        }
+
+        /// <summary>撮影に使った設定 (解像度・SSAA 倍率・出力形式・撮影範囲)。</summary>
+        private static string SettingsLine(CaptureSettings settings)
+        {
+            var size = settings.NormalizedImageSize;
+            var ssaa = size <= 2048 ? 4 : 2;
+            string format;
+            switch (settings.format)
+            {
+                case CaptureOutputFormat.Mp4:
+                    format = $"PNG + MP4 ({settings.SecondsPerRotation:0.#}s/rot)";
+                    break;
+                case CaptureOutputFormat.Gif:
+                    format = "PNG + GIF";
+                    break;
+                case CaptureOutputFormat.ProRes422:
+                    format = $"PNG + ProRes 422 ({settings.SecondsPerRotation:0.#}s/rot)";
+                    break;
+                default:
+                    format = "PNG";
+                    break;
+            }
+
+            var view = settings.viewMode == CaptureViewMode.FullOnly ? "full"
+                : settings.viewMode == CaptureViewMode.FaceOnly ? "face"
+                : "full+face";
+            return $"Capture settings: {size}px, SSAA x{ssaa}, {format}, view {view}";
+        }
+
+        /// <summary>
+        /// ターゲット配下の描画物の規模 (メッシュ / 三角形 / ボーン / BlendShape) と
+        /// マテリアル数・使用シェーダ一覧。重さの変化や見た目差の切り分け用。
+        /// 三角形数などは Renderer ごとの合計 (同じメッシュを複数の Renderer が
+        /// 使っていれば、実際に描画される回数ぶん数える)。
+        /// </summary>
+        public static List<string> CollectStatsLines(Animator animator)
+        {
+            var lines = new List<string>();
+            try
+            {
+                long triangles = 0;
+                var meshCount = 0;
+                var blendShapes = 0;
+                var bones = new HashSet<Transform>();
+                var materialCount = 0;
+                var shaders = new SortedSet<string>(StringComparer.Ordinal);
+                foreach (var renderer in animator.GetComponentsInChildren<Renderer>(true))
+                {
+                    var mesh = MeshOf(renderer);
+                    if (mesh != null)
+                    {
+                        meshCount++;
+                        for (var i = 0; i < mesh.subMeshCount; i++)
+                        {
+                            triangles += (long)mesh.GetIndexCount(i) / 3;
+                        }
+
+                        blendShapes += mesh.blendShapeCount;
+                    }
+
+                    if (renderer is SkinnedMeshRenderer skinned)
+                    {
+                        foreach (var bone in skinned.bones)
+                        {
+                            if (bone != null)
+                            {
+                                bones.Add(bone);
+                            }
+                        }
+                    }
+
+                    foreach (var material in renderer.sharedMaterials)
+                    {
+                        if (material == null)
+                        {
+                            continue;
+                        }
+
+                        materialCount++;
+                        if (material.shader != null)
+                        {
+                            shaders.Add(material.shader.name);
+                        }
+                    }
+                }
+
+                lines.Add($"Meshes: {meshCount}"
+                    + $" (triangles {triangles:N0} / bones {bones.Count} / blendshapes {blendShapes})");
+                lines.Add($"Materials: {materialCount}"
+                    + (shaders.Count == 0
+                        ? string.Empty
+                        : $" (shaders: {Truncate(string.Join(", ", shaders))})"));
+            }
+            catch (Exception e)
+            {
+                Debug.LogWarning($"[AvatarSetupTool] デバッグ情報 (統計) の収集に失敗しました: {e.Message}");
+            }
+
+            return lines;
+        }
+
+        private static Mesh MeshOf(Renderer renderer)
+        {
+            if (renderer is SkinnedMeshRenderer skinned)
+            {
+                return skinned.sharedMesh;
+            }
+
+            var filter = renderer.GetComponent<MeshFilter>();
+            return filter == null ? null : filter.sharedMesh;
+        }
+
         /// <summary>撮影対象そのもの (アセットパス + Prefab なら git コミット) の情報行。</summary>
         public static List<string> CollectSourceLines(GameObject source)
         {
@@ -135,7 +305,14 @@ namespace Hidano.AvatarSetupTool.Editor
                 }
 
                 lines.Add($"FBX: {fbxPath} (meshes {meshCount}/{totalMeshes})");
-                var meta = FbxHeaderReader.Read(Path.GetFullPath(fbxPath));
+                var fbxFullPath = Path.GetFullPath(fbxPath);
+                var hashLine = FileHashLine(fbxFullPath);
+                if (hashLine != null)
+                {
+                    lines.Add(hashLine);
+                }
+
+                var meta = FbxHeaderReader.Read(fbxFullPath);
 
                 var exported = FormatTimeStamp(meta) ?? Get(meta, "CreationTime");
                 var app = JoinNonEmpty(" ",
@@ -215,17 +392,7 @@ namespace Hidano.AvatarSetupTool.Editor
             var total = 0;
             foreach (var renderer in animator.GetComponentsInChildren<Renderer>(true))
             {
-                Mesh mesh;
-                if (renderer is SkinnedMeshRenderer skinned)
-                {
-                    mesh = skinned.sharedMesh;
-                }
-                else
-                {
-                    var filter = renderer.GetComponent<MeshFilter>();
-                    mesh = filter == null ? null : filter.sharedMesh;
-                }
-
+                var mesh = MeshOf(renderer);
                 if (mesh == null)
                 {
                     continue;
@@ -313,6 +480,33 @@ namespace Hidano.AvatarSetupTool.Editor
                 }
 
                 return process.ExitCode == 0 ? output : null;
+            }
+        }
+
+        /// <summary>
+        /// ファイルの SHA-256 ハッシュとサイズ。「この画像はどの FBX から作られたか」を
+        /// パス表記よりも厳密に照合するための同一性情報。読めなければ null。
+        /// </summary>
+        private static string FileHashLine(string fullPath)
+        {
+            try
+            {
+                long size;
+                byte[] hash;
+                using (var stream = new FileStream(
+                    fullPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
+                using (var sha = System.Security.Cryptography.SHA256.Create())
+                {
+                    size = stream.Length;
+                    hash = sha.ComputeHash(stream);
+                }
+
+                var hex = BitConverter.ToString(hash).Replace("-", string.Empty).ToLowerInvariant();
+                return $"FBX SHA-256: {hex} ({size:N0} bytes)";
+            }
+            catch (Exception)
+            {
+                return null;
             }
         }
 
