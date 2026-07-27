@@ -1,65 +1,60 @@
 # HANDOVER
 
+セッション日: 2026-07-26〜27 / パッケージ: com.hidano.avatarsetuptool 0.5.0 → **0.8.0** (未 publish)
+
 ## 今回やったこと
 
-- スクショツールを EditorWindow ベースに改良(0.5.0)。UI とロジックを分離
-  - `ModelCaptureWindow.cs`(新規): 設定 UI。EditorPrefs へ JSON で設定を永続化
-  - `ModelCaptureService.cs`(`FbxModelCaptureTool.cs` を git mv、GUID 維持): UI 非依存ロジック。`Capture(GameObject, CaptureSettings, progress)` 公開で将来 CLI (-executeMethod) から呼べる
-  - `CaptureSettings.cs`(新規): 純粋データ。`CaptureFileName.cs`(新規): ワイルドカード解決
-- 撮影対象を ObjectField 指定に変更: FBX / Prefab に加え Hierarchy 上の GameObject(編集状態を Instantiate で複製、Camera/Light 無効化、lossyScale 維持)
-- 解像度 256〜8192px(高さ基準、4 の倍数丸め)。プリセット + カスタム。実行前に maxTextureSize と推定メモリ(実装メモリの半分が上限)を検証し、超過時は撮影せず警告
-- 背景を白 → グレー(RGB 184)+ グリッド(主線 1m / 細線 10cm、y=0 は主線)
-- MP4 回転速度を選択式に: 5/10/20 秒 + カスタム 1〜300 秒。デフォルト 10 秒/周(従来 6 秒)
-- ファイル名ワイルドカード(Recorder 風): `<Model> <Target> <Direction> <View> <Resolution> <Date> <Time> <Take>`。衝突するパターンにはトークン自動補完。Take は成功ごとに +1
-- 右クリックメニュー 3 項目 → 「Capture Model Images...」1 項目に統合(ウィンドウを開いて対象セット)。`Window > Avatar Setup Tool > Model Capture` も追加
-- batchmode コンパイル 2 回でエラー・警告ゼロを確認。未コミット
+- **v0.6.0**: ProRes 422 エンコーダを純 C# で自前実装 (`ProResWriter.cs`、SMPTE RDD 36 + QuickTime MOV muxer)。dotnet + ffmpeg round-trip で PSNR 64〜69dB を検証済み
+- **v0.6.0**: メニューを `Tools/Hidano/AvatarSetupTool/Model Capture` へ移動。回転速度ラベルの「/」分割修正。「撮影範囲」(全身のみ/顔のみ/全部) ドロップダウン追加、`<View>` をワイルドカード一覧から削除 (両方撮影時のみ自動補完)
+- **v0.7.0**: グリッド線のリニア色空間バグ修正 (頂点カラーが sRGB 変換されず 1m 主線が消えていた。間隔は元から正確)。H.264 上限 (4096×2304) の事前チェック。同名フォルダは " (1)" 連番で回避。ディスク空き容量チェック + 確認ダイアログ
+- **v0.8.0**: PNG に SSAA (≤2048px は 4 倍、以上は 2 倍、テクスチャ上限超えは正射影タイル分割)。キャンセルボタン (DisplayCancelableProgressBar、中断時は書きかけ動画を削除)。8K+MP4 は撮影ボタン無効化 + ProRes 切替ボタン。10cm 線を破線化 (2cm 周期)。出力サイズ・時間の目安表示 (実測キャリブレーション済み)
+- 検証: Unity 内でテスト用ヒューマノイドを動的生成して実撮影・ピクセル実測 (グリッド間隔/破線/AA 階調/フォルダ連番/ProRes・MP4 回帰)
 
 ## 決定事項
 
-- ロジック層はダイアログ・プログレスバー禁止。進捗は `Action<string, float>`、結果は `CaptureResult` で返す
-- グリッドはテクスチャでなく頂点カラー付きメッシュ(細線→主線の順に追加、ZWrite Off の Sprites/Default で後勝ち描画)。8K でもメモリ増なし・線がクリスプ
-- カメラ固定・モデル回転方式は維持 → グリッドは回転中も静止
-- メモリ検証は実行時に全ターゲットの構図確定後に実施(アスペクト比が事前に不明のため)。UI 表示は正方形仮定の概算
-- 回転速度は MP4 のみ。GIF は従来どおり 8 方向 × 2 秒固定
-- 複数選択の一括撮影は廃止(ウィンドウは単一ターゲット)
-- 設定は EditorPrefs キー `Hidano.AvatarSetupTool.ModelCapture.Settings` に EditorJsonUtility で保存
+- ProRes は自前エンコーダ (外部ツール・Recorder パッケージ非依存)。固定品質 qScale=2、フラット量子化行列、エンコーダ ID "ast0"、MOV は 4GB 上限で明示エラー
+- 動画ライターは `IVideoFrameWriter` (Mp4Writer/ProResWriter、ボトムアップ行順) で抽象化
+- 静止画 AA は SSAA + 正射影タイル分割。倍率は VRAM (graphicsMemorySize の半分) とテクスチャ上限でクランプ
+- 見積もり係数は実測の 1.3〜1.7 倍の安全率 (PNG 0.25B/px、MP4 0.1bit/px、ProRes 3bit/px、時間はスループット定数)
+- 破線は周期をグリッド間隔の約数 (2cm) にして交点を必ず点の中心に揃える
+- `CaptureOutputFormat` は EditorPrefs に int 保存のため既存 enum 順序は変更禁止 (ProRes422 は末尾追加)
 
 ## 捨てた選択肢と理由
 
-- **グリッドをフル解像度テクスチャで生成**: 16384px 幅で 1GB 級のメモリ消費。メッシュ方式なら数百クアッドで済む
-- **グリッドをタイルテクスチャ + リピート**: 拡大時に線がぼける
-- **キャプチャ後の CPU 合成でグリッド描画**: モデルと背景の分離が不確実(モデルに背景色が含まれると誤爆)
-- **カスタムシェーダーでグリッド描画**: URP / BiRP 両対応の手間。Sprites/Default(頂点カラー・アンリット・URP 動作)で十分
-- **kiro spec 化**: ユーザーが直接実装を指示しており、過去セッションも直接実装の実績。spec は使わず
+- **MSAA RT への描画**: URP のプレビュー描画パスでは MSAA ターゲットに何も描画されない (真っ黒) ことを実測確認。`BeginStaticPreview` を経由しない自前 RT 描画は LightmapSettings 未初期化で **エディタごとクラッシュ**するため厳禁
+- **SMAA/ポストプロセス AA**: cameraType=Game 偽装でのみ動作するが背景色が 184→161 に化けるため不採用
+- **Unity Recorder パッケージの ProRes**: フレーム単位の公開 API がなく依存も増えるため不採用
+- **UnityEditor.Media での ProRes**: UnityEditor.dll / MediaModule に ProRes 文字列なし (H.264/VP8 のみ) を確認済み
+- **8K の MP4 出力**: H.264 規格上は Level 6 で可能だが Windows Media Foundation が 4096×2304 相当まで。対応せず ProRes へ誘導する UI にした
 
 ## ハマりどころ
 
-- `EditorGUILayout.Popup(GUIContent, int, string[])` オーバーロードは存在しない → GUIContent[] に変換して使う
-- git mv した直後の Write は先に Read が必要(ツール制約)
-- batchmode コンパイル中にソース編集すると反映が不確実 → 2 回目を実行して確認した
-- AvatarSetupTool の uloop パイプは `uloop-UnityCliLoop-cfa18d2cc7ff7806`。今回開いていたパイプ `ba9f03c5bd80ba3e` は別プロジェクトのもの。パイプ名で判別する
-- ユーザーが他プロジェクトで Unity 作業中 → GUI エディタは起動せず `-batchmode -nographics -quit -logFile` でコンパイル確認(前回からの引き継ぎ、有効だった)
+- ProRes のスキャン順テーブルを最初誤っていた (index 19 以降)。ffmpeg に単一 DCT 係数パターンをエンコードさせてビットストリームから真のテーブルを実測して解決 (`ProResWriter.cs` の ProgressiveScan が正)
+- uloop ディスパッチャは今も CLI_UPDATE_REQUIRED ループで全滅 → beta.45 ランナー直呼び (メモリ `uloop-dispatcher-workaround.md` 参照。execute-dynamic-code は `--code-file` 必須、数値リテラルの byte 引数は `(byte)255` 明示)
+- 開発用 Unity は数回落ちた/閉じられた。`D:\UnityEditors\6000.3.19f1\Editor\Unity.exe -projectPath ...` で起動し、パイプ `\\.\pipe\uloop-UnityCliLoop-cfa18d2cc7ff7806` の出現を待つ
+- ユーザーの (非公開) プロジェクト ((非公開プロジェクト)) が同時に開いていることがある。Unity プロセスはコマンドラインでプロジェクトを判別してから操作すること
+- プレビュー RT は HDR float16 (R16G16B16A16_SFloat)。GetPixels 直読みはリニア値になる
 
 ## 学び
 
-- `PreviewRenderUtility.AddSingleGO` でシーン上の GameObject の複製をプレビューシーンに入れられる(プレハブ以外も撮影可能)
-- `Object.Instantiate` は親から外れるので lossyScale の引き継ぎが必要
-- 並行投影 + カメラ固定なら、ワールド XY 平面のメッシュを奥に置くだけで画面座標に一致した背景グリッドになる
-- Windows ではファイル名に `<` `>` が使えないため、未知トークンは Sanitize で自然に `_` へ潰れる
+- PreviewRenderUtility + URP は「MSAA なし・ポストプロセスなし」が前提。AA は SSAA しか選択肢がない。正射影ならタイル分割描画が厳密に一致するのでテクスチャ上限を回避できる
+- Sprites/Default の頂点カラーは色空間変換されない → リニア色空間では `Color.linear` 変換が必要
+- MediaEncoder (High) のビットレートは解像度基準でコンテンツ依存が小さい → サイズ見積もりが決定的にできる
+- ffmpeg を「リファレンスエンコーダ/デコーダ」にした相互検証は自前コーデック実装の強力な検証手段
 
 ## 次にやること
 
-1. **[高] 実モデルでの動作確認**(ユーザー作業): ウィンドウから PNG / MP4 / GIF を出力し、グリッドの見た目(色・太さ)、Hierarchy オブジェクト撮影、8K などの大解像度時の警告動作を目視確認。未実施
-2. [中] 0.5.0 のコミット(ユーザーは自分でコミットする習慣。全変更が未コミット)
-3. [低] グリッドの色・線幅の調整(`ModelCaptureService` の `BackgroundColor` / `SubLineColor` / `MainLineColor` / `CreateGridObject` 内の 3px / 1.5px)
-4. [低] GIF にも回転速度(フレーム間隔)設定を適用するか検討(現状 2 秒固定)
+1. **(高) 0.8.0 の publish** — ユーザーの (非公開) プロジェクトはレジストリ (npmjs, scope com.hidano) 経由参照のため、publish しないと修正が届かない
+2. **(中) コミット** — 今回の変更は未コミット (ユーザー未依頼のため保留中)
+3. (低) 実アバターでの 8K ProRes 実地確認 (時間目安 約 42 分/体。キャンセル可)
+4. (低) ProRes の MOV 4GB 超え対応 (co64) は必要になったら
 
 ## 関連ファイル
 
-- `AvatarSetupTool/Packages/com.hidano.avatarsetuptool/Editor/ModelCaptureWindow.cs` — 設定 UI(新規)
-- `AvatarSetupTool/Packages/com.hidano.avatarsetuptool/Editor/ModelCaptureService.cs` — 撮影ロジック(旧 FbxModelCaptureTool.cs)
-- `AvatarSetupTool/Packages/com.hidano.avatarsetuptool/Editor/CaptureSettings.cs` — 設定データ(新規)
-- `AvatarSetupTool/Packages/com.hidano.avatarsetuptool/Editor/CaptureFileName.cs` — ワイルドカード解決(新規)
-- `AvatarSetupTool/Packages/com.hidano.avatarsetuptool/CHANGELOG.md` — 0.5.0 追記
-- `AvatarSetupTool/Packages/com.hidano.avatarsetuptool/package.json` — 0.5.0
-- コンパイルログ: scratchpad `compile.log` / `compile2.log`(セッション終了で消える)
+- `AvatarSetupTool/Packages/com.hidano.avatarsetuptool/Editor/ProResWriter.cs` (新規: ProRes 422 エンコーダ + MOV muxer)
+- `AvatarSetupTool/Packages/com.hidano.avatarsetuptool/Editor/ModelCaptureService.cs` (SSAA/タイル描画、破線グリッド、キャンセル、見積もり、H.264 検証、フォルダ連番)
+- `AvatarSetupTool/Packages/com.hidano.avatarsetuptool/Editor/ModelCaptureWindow.cs` (撮影範囲、警告 2 段階、ボタン無効化、サイズ/時間表示、容量確認)
+- `AvatarSetupTool/Packages/com.hidano.avatarsetuptool/Editor/CaptureSettings.cs` (ProRes422/CaptureViewMode 追加)
+- `AvatarSetupTool/Packages/com.hidano.avatarsetuptool/Editor/CaptureFileName.cs` (`<View>` 一覧削除)
+- `AvatarSetupTool/Packages/com.hidano.avatarsetuptool/Editor/Mp4Writer.cs` (IVideoFrameWriter)
+- `AvatarSetupTool/Packages/com.hidano.avatarsetuptool/CHANGELOG.md` / `package.json` (0.8.0)
