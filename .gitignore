@@ -65,6 +65,9 @@ crashlytics-build.properties
 # Avatar Setup Tool のキャプチャ出力
 [Cc]aptures/
 
+# セッション引き継ぎメモ (内部向け、リポジトリには含めない)
+/HANDOVER.md
+
 # Others
 .DS_Store
 .vscode
