@@ -65,19 +65,19 @@ namespace Hidano.AvatarSetupTool.Editor
         /// <summary>
         /// カメラは -Z 側に固定し、モデル側を Y 回転させて 8 方向を撮る。
         /// yaw=180 でモデルの正面がカメラを向く。
-        /// 名前の番号は、ファイル名順に並べたとき正面から左向きへ
-        /// 回転していく順序になるように振っている (GIF のフレーム順も同じ)。
+        /// 名前は正面を 0 とした度数表記 (正面から左向きへ 45 度刻み)。
+        /// 3 桁ゼロ埋めなので、ファイル名順に並べたとき回転順になる (GIF のフレーム順も同じ)。
         /// </summary>
         private static readonly (string Name, float Yaw)[] Directions =
         {
-            ("01_front", 180f),
-            ("02_front_left", -135f),
-            ("03_left", -90f),
-            ("04_back_left", -45f),
-            ("05_back", 0f),
-            ("06_back_right", 45f),
-            ("07_right", 90f),
-            ("08_front_right", 135f),
+            ("000", 180f),
+            ("045", -135f),
+            ("090", -90f),
+            ("135", -45f),
+            ("180", 0f),
+            ("225", 45f),
+            ("270", 90f),
+            ("315", 135f),
         };
 
         /// <summary>
@@ -244,7 +244,7 @@ namespace Hidano.AvatarSetupTool.Editor
                             if (settings.CaptureFace)
                             {
                                 backdrop.Show(showFull: false);
-                                var faceName = ResolveName(stillPattern, dirName, "face",
+                                var faceName = ResolveName(stillPattern, dirName, "BS",
                                     faceView.RenderWidth, faceView.RenderHeight);
                                 var faceFrame = CaptureShot(preview, faceView,
                                     Path.Combine(outputDir, faceName + ".png"), makeGifFrame, debugText);
@@ -275,7 +275,7 @@ namespace Hidano.AvatarSetupTool.Editor
                             if (settings.CaptureFace)
                             {
                                 GifWriter.Write(
-                                    Path.Combine(outputDir, ResolveName(videoPattern, null, "face",
+                                    Path.Combine(outputDir, ResolveName(videoPattern, null, "BS",
                                         faceView.AnimWidth, faceView.AnimHeight) + ".gif"),
                                     faceGifFrames, faceView.AnimWidth, faceView.AnimHeight,
                                     GifFrameDelayCentiseconds);
@@ -289,7 +289,7 @@ namespace Hidano.AvatarSetupTool.Editor
                                     fullView.AnimWidth, fullView.AnimHeight) + extension)
                                 : null;
                             var facePath = settings.CaptureFace
-                                ? Path.Combine(outputDir, ResolveName(videoPattern, null, "face",
+                                ? Path.Combine(outputDir, ResolveName(videoPattern, null, "BS",
                                     faceView.AnimWidth, faceView.AnimHeight) + extension)
                                 : null;
                             var canceled = CaptureTurntableVideos(

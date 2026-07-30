@@ -20,7 +20,7 @@ namespace Hidano.AvatarSetupTool.Editor
         {
             ("<Model>", "アセット・GameObject 名"),
             ("<Target>", "Animator オブジェクト名"),
-            ("<Direction>", "方向 (01_front など。動画では空)"),
+            ("<Direction>", "方向 (正面 0 起点の度数 000〜315。動画では空)"),
             ("<Resolution>", "出力解像度 (幅x高さ)"),
             ("<Date>", "日付 (yyyy-MM-dd)"),
             ("<Time>", "時刻 (HH-mm-ss)"),

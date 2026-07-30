@@ -175,8 +175,8 @@ namespace Hidano.AvatarSetupTool.Editor
             }
 
             var view = settings.viewMode == CaptureViewMode.FullOnly ? "full"
-                : settings.viewMode == CaptureViewMode.FaceOnly ? "face"
-                : "full+face";
+                : settings.viewMode == CaptureViewMode.FaceOnly ? "BS"
+                : "full+BS";
             return $"Capture settings: {size}px, SSAA x{ssaa}, {format}, view {view}";
         }
 

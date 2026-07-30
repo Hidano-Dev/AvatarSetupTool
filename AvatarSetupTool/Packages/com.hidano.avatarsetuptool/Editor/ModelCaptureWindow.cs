@@ -65,6 +65,11 @@ namespace Hidano.AvatarSetupTool.Editor
                 }
             }
 
+            if (settings.fileNamePattern == CaptureSettings.LegacyFileNamePattern)
+            {
+                settings.fileNamePattern = CaptureSettings.DefaultFileNamePattern;
+            }
+
             if (string.IsNullOrEmpty(settings.outputRoot))
             {
                 settings.outputRoot = Environment.GetFolderPath(Environment.SpecialFolder.MyPictures);
@@ -259,9 +264,9 @@ namespace Hidano.AvatarSetupTool.Editor
             var effectivePattern = ModelCaptureService.EffectivePattern(
                 settings.fileNamePattern, multipleTargets: false, forStill: true,
                 bothViews: settings.viewMode == CaptureViewMode.Both);
-            var viewLabel = settings.viewMode == CaptureViewMode.FaceOnly ? "face" : "full";
+            var viewLabel = settings.viewMode == CaptureViewMode.FaceOnly ? "BS" : "full";
             var preview = CaptureFileName.Resolve(
-                effectivePattern, "Model", "Target", "01_front", viewLabel,
+                effectivePattern, "Model", "Target", "000", viewLabel,
                 settings.NormalizedImageSize, settings.NormalizedImageSize, DateTime.Now, settings.take);
             EditorGUILayout.LabelField(" ", $"例: {preview}.png", EditorStyles.miniLabel);
         }

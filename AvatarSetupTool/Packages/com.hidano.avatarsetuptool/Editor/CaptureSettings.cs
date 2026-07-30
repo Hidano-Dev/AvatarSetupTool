@@ -40,7 +40,13 @@ namespace Hidano.AvatarSetupTool.Editor
     {
         public const int MinImageSize = 256;
         public const int MaxImageSize = 8192;
-        public const string DefaultFileNamePattern = "<Target>_<Direction>";
+        public const string DefaultFileNamePattern = "<Target>_<View>_<Direction>_t<Take>";
+
+        /// <summary>
+        /// 旧デフォルトパターン。EditorPrefs にこの値が保存されている場合のみ
+        /// 新デフォルトへ自動移行する (カスタムパターンには触らない)。
+        /// </summary>
+        public const string LegacyFileNamePattern = "<Target>_<Direction>";
 
         public CaptureOutputFormat format = CaptureOutputFormat.ImagesOnly;
 
