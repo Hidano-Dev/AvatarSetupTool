@@ -12,7 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - 出力ファイル名の命名をデザイナー要望に合わせて変更:
-  - デフォルトパターンを `<Target>_<Direction>` から `<Target>_<View>_<Direction>_t<Take>` に変更 (例: `(非公開)_BS_045_t001.png`)。保存済みの設定が旧デフォルトと完全一致する場合のみ新デフォルトへ自動移行し、カスタムパターンはそのまま維持する
+  - デフォルトパターンを `<Target>_<Direction>` から `<Target>_<View>_<Direction>_t<Take>` に変更。保存済みの設定が旧デフォルトと完全一致する場合のみ新デフォルトへ自動移行し、カスタムパターンはそのまま維持する
   - `<Direction>` の値を方向名 (`01_front`〜`08_front_right`) から正面 0 起点の度数表記 (`000`, `045`, … `315`。左回り 45 度刻み、3 桁ゼロ埋め) に変更。名前順で回転順に並ぶのは従来どおり
   - `<View>` の顔アップ側のラベルを `face` から `BS` (バストショット) に変更 (`full` はそのまま。構図は変更なし)
 
