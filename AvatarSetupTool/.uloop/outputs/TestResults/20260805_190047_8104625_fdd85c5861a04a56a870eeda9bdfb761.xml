@@ -1,0 +1,27 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<test-run id="2" testcasecount="1" result="Failed" total="1" passed="0" failed="1" skipped="0" inconclusive="0" start-time="2026-08-05 18:59:30" end-time="2026-08-05 19:00:47" duration="77.146">
+  <test-suite type="TestSuite" name="AvatarSetupTool" fullname="AvatarSetupTool" result="Failed" start-time="2026-08-05 18:59:30" end-time="2026-08-05 19:00:47" duration="77.146" total="1" passed="0" failed="1" skipped="0" inconclusive="0">
+    <test-suite type="TestSuite" name="Hidano.AvatarSetupTool.Editor.Tests.dll" fullname="D:/Personal/Repositries/AvatarSetupTool/AvatarSetupTool/Library/ScriptAssemblies/Hidano.AvatarSetupTool.Editor.Tests.dll" result="Failed" start-time="2026-08-05 18:59:30" end-time="2026-08-05 19:00:47" duration="77.047" total="1" passed="0" failed="1" skipped="0" inconclusive="0">
+      <test-suite type="TestSuite" name="Hidano" fullname="Hidano" result="Failed" start-time="2026-08-05 18:59:30" end-time="2026-08-05 19:00:47" duration="76.950" total="1" passed="0" failed="1" skipped="0" inconclusive="0">
+        <test-suite type="TestSuite" name="AvatarSetupTool" fullname="Hidano.AvatarSetupTool" result="Failed" start-time="2026-08-05 18:59:30" end-time="2026-08-05 19:00:47" duration="76.850" total="1" passed="0" failed="1" skipped="0" inconclusive="0">
+          <test-suite type="TestSuite" name="Editor" fullname="Hidano.AvatarSetupTool.Editor" result="Failed" start-time="2026-08-05 18:59:31" end-time="2026-08-05 19:00:47" duration="76.750" total="1" passed="0" failed="1" skipped="0" inconclusive="0">
+            <test-suite type="TestSuite" name="Tests" fullname="Hidano.AvatarSetupTool.Editor.Tests" result="Failed" start-time="2026-08-05 18:59:31" end-time="2026-08-05 19:00:47" duration="76.650" total="1" passed="0" failed="1" skipped="0" inconclusive="0">
+              <test-suite type="Hidano.AvatarSetupTool.Editor.Tests.Highres8KVerificationTests" name="Highres8KVerificationTests" fullname="Hidano.AvatarSetupTool.Editor.Tests.Highres8KVerificationTests" result="Failed" start-time="2026-08-05 18:59:31" end-time="2026-08-05 19:00:47" duration="76.550" total="1" passed="0" failed="1" skipped="0" inconclusive="0">
+                <test-case name="Verify8K_RealMachine" fullname="Hidano.AvatarSetupTool.Editor.Tests.Highres8KVerificationTests.Verify8K_RealMachine" result="Failed" start-time="2026-08-05 18:59:31" end-time="2026-08-05 19:00:47" duration="76.447">
+                  <failure>
+                    <message>  CPU 側ピークメモリ (プロセス Private Bytes のベースライン差分) が 1GB/枚 未満であること
+  Expected: less than 1073741824
+  But was:  1977466880
+</message>
+                    <stack-trace>at Hidano.AvatarSetupTool.Editor.Tests.Highres8KVerificationTests.Verify8K_RealMachine () [0x0011a] in .\Packages\com.hidano.avatarsetuptool\Tests\Editor\Highres8KVerificationTests.cs:128
+</stack-trace>
+                  </failure>
+                </test-case>
+              </test-suite>
+            </test-suite>
+          </test-suite>
+        </test-suite>
+      </test-suite>
+    </test-suite>
+  </test-suite>
+</test-run>
