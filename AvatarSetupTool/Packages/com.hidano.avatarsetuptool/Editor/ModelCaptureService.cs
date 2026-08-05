@@ -98,7 +98,7 @@ namespace Hidano.AvatarSetupTool.Editor
         /// <summary>
         /// ターゲット 1 体分の固定構図。8 方向の静止画とターンテーブル動画のすべてで共用する。
         /// </summary>
-        private readonly struct ViewSpec
+        internal readonly struct ViewSpec
         {
             public ViewSpec(Vector3 center, float orthoSize, float depthExtent, int animWidth, int animHeight)
             {
@@ -688,7 +688,7 @@ namespace Hidano.AvatarSetupTool.Editor
             return unique;
         }
 
-        private static void SetupCameraAndLights(PreviewRenderUtility preview)
+        internal static void SetupCameraAndLights(PreviewRenderUtility preview)
         {
             var camera = preview.camera;
             camera.orthographic = true;
@@ -1187,7 +1187,18 @@ namespace Hidano.AvatarSetupTool.Editor
         private static Color32[] RenderStill(
             PreviewRenderUtility preview, ViewSpec view, Func<bool> checkCancel, string shotLabel)
         {
-            var layout = StillLayout(view);
+            return RenderStill(preview, view, StillLayout(view), checkCancel, shotLabel);
+        }
+
+        /// <summary>
+        /// レイアウトを引数で受ける実体。製品経路は <see cref="StillLayout"/> の結果を渡し、
+        /// 等価性テストは辺長上限を強制的に絞ったレイアウトを注入して
+        /// 多タイル描画と単一パス描画を同一フローで比較する。
+        /// </summary>
+        internal static Color32[] RenderStill(
+            PreviewRenderUtility preview, ViewSpec view, TileLayout layout,
+            Func<bool> checkCancel, string shotLabel)
+        {
             if (layout.Factor < layout.RequestedFactor)
             {
                 Debug.LogWarning(
