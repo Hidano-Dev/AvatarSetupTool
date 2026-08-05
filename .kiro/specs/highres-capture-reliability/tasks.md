@@ -1,7 +1,7 @@
 # Implementation Plan
 
 - [ ] 1. テスト基盤を新設し現行挙動を固定する
-- [ ] 1.1 Editor テストアセンブリの新設と internal 公開
+- [x] 1.1 Editor テストアセンブリの新設と internal 公開
   - パッケージ内に EditMode テスト用のテストアセンブリ (Tests/Editor) を新設し、Test Runner 参照・nunit precompiled 参照・UNITY_INCLUDE_TESTS 制約・Editor 限定の定型構成で本体アセンブリを参照する
   - 本体アセンブリに InternalsVisibleTo を追加し、internal のロジックをテストから検証可能にする (埋め込みパッケージのため manifest 変更は不要)
   - 完了条件: Unity Test Runner (EditMode) にテストアセンブリが表示され、internal メンバを参照するプレースホルダテストがコンパイル・実行できる
