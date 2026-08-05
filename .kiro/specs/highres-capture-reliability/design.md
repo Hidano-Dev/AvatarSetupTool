@@ -165,6 +165,7 @@ flowchart TB
 - 黒判定はタイル読み戻し直後 (合成前) に行う。リトライは同一タイルにつき 1 回のみで、同一 `PreviewRenderUtility` を再利用する (preview の再生成は行わない — TDR 復旧は保証不能なため、予防 = タイル小型化を主対策とする。research.md)。
 - 例外は PNG 保存より前に送出されるため、黒 PNG がディスクに書かれることはない (3.3)。
 - 単一パス描画 (1.2) は「1×1 タイルのレイアウト」として同一フローで扱い、分岐を持たない。
+- キャンセル判定はタイルループの各反復前にも行う (6.3)。進捗コールバックへは直前と同一の進捗テキスト・進捗値を渡すため、コールバック契約と進捗表示は不変のまま応答性のみ向上する。キャンセル検出時は合成・エンコード・保存へ進まずに脱出するため、書きかけの PNG は残らない。
 
 ## Requirements Traceability
 
@@ -173,7 +174,7 @@ flowchart TB
 | 1.1 | タイル辺長を安全上限と VRAM 予算から算出し分割描画 | TileLayout, RenderStill | `TileLayout.Compute`, `ComputeTileSideLimit` | タイル描画フロー |
 | 1.2 | 辺長以下なら単一パス描画 | TileLayout | `TileLayout.Compute` (1×1 レイアウト) | 同上 |
 | 1.3 | SSAA 約数制約なしの任意分割数 | TileLayout | `TileLayout.GetTile` (非一様矩形) | 同上 |
-| 1.4 | 合成結果が単一描画とピクセル同一 | TileLayout, RenderStill, 縮小合成ヘルパ | `DownscaleIntoRgb24` (境界整列) | 同上 |
+| 1.4 | 合成結果が単一描画と一致 (完全一致目標、各チャンネル ±1 階調以内許容) | TileLayout, RenderStill, 縮小合成ヘルパ | `DownscaleIntoRgb24` (境界整列) + double 精度カメラ換算 | 同上 |
 | 1.5 | タイル RT が maxTextureSize と算出辺長を超えない | TileLayout | `ComputeTileSideLimit` の min 構成 | — |
 | 2.1 | 解像度既定の SSAA 倍率 (≤2048→4, 超→2) | SSAA ポリシー | `TileLayout.Compute` の preferredFactor | — |
 | 2.2 | タイルが予算内なら SSAA を 1 に落とさない | SSAA ポリシー, TileLayout | 同上 (VRAM 降格の撤去) | — |
@@ -192,7 +193,7 @@ flowchart TB
 | 5.3 | 時間見積もり係数の更新 | 見積もり | レート定数 + `EstimateSecondsForViews` | — |
 | 6.1 | PNG 内容・ファイル名・iTXt 仕様不変 | PNG エンコード経路 | ピクセル一致テスト + WithText 無変更 | — |
 | 6.2 | 動画経路の動作不変 | (境界外の維持) | `Downscale` / `AddVideoFrame` 無変更 | — |
-| 6.3 | 進捗・キャンセル動作の維持 | RenderStill | 進捗コールバック契約の不変 | — |
+| 6.3 | 進捗・キャンセル動作の維持 (タイル単位判定による応答性向上は許容) | RenderStill | 進捗コールバック契約の不変 + タイル間キャンセル判定 | タイル描画フロー |
 | 6.4 | CLI で UI 非依存に完了 | 失敗伝搬 | Result 契約 + `Debug.LogError` | — |
 | 6.5 | CLI 失敗を判別可能に報告 | 失敗伝搬 | `CaptureResult.Fail` + LogError | — |
 
