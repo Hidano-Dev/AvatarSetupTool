@@ -22,6 +22,21 @@ namespace Hidano.AvatarSetupTool.Editor
     }
 
     /// <summary>
+    /// リトライ後も黒フレームだった描画失敗。原因究明用の診断情報 (構図/方向・出力解像度・
+    /// SSAA 倍率・タイル位置と総数・レンダサイズ・環境値) をメッセージに含める。
+    /// <see cref="ModelCaptureService.Capture"/> が捕捉して <see cref="CaptureResult.Fail"/> へ
+    /// 変換するため、呼び出し元へは公開契約 (Result) の失敗として届く。
+    /// 送出は PNG 保存前のため、黒い PNG がディスクに書かれることはない。
+    /// </summary>
+    internal sealed class CaptureRenderFailedException : Exception
+    {
+        public CaptureRenderFailedException(string message)
+            : base(message)
+        {
+        }
+    }
+
+    /// <summary>
     /// モデルを 8 方向 × 撮影範囲 (全身 / 顔アップ / 両方) の PNG としてキャプチャし、
     /// 設定に応じてターンテーブル動画 (MP4 / GIF / ProRes 422) も生成するロジック層。
     /// UI (EditorWindow・ダイアログ・プログレスバー) には依存せず、
@@ -240,7 +255,7 @@ namespace Hidano.AvatarSetupTool.Editor
                                     fullView.RenderWidth, fullView.RenderHeight);
                                 var fullFrame = CaptureShot(preview, fullView,
                                     Path.Combine(outputDir, fullName + ".png"), makeGifFrame,
-                                    CheckCancel, debugText);
+                                    CheckCancel, $"{captureName} full {dirName}", debugText);
                                 step++;
                                 if (makeGifFrame)
                                 {
@@ -255,7 +270,7 @@ namespace Hidano.AvatarSetupTool.Editor
                                     faceView.RenderWidth, faceView.RenderHeight);
                                 var faceFrame = CaptureShot(preview, faceView,
                                     Path.Combine(outputDir, faceName + ".png"), makeGifFrame,
-                                    CheckCancel, debugText);
+                                    CheckCancel, $"{captureName} BS {dirName}", debugText);
                                 step++;
                                 if (makeGifFrame)
                                 {
@@ -328,6 +343,13 @@ namespace Hidano.AvatarSetupTool.Editor
             {
                 // タイルループ内でのキャンセル検出。PNG 保存前に脱出しているため書きかけのファイルは残らない
                 return CaptureResult.Cancel();
+            }
+            catch (CaptureRenderFailedException e)
+            {
+                // 描画失敗 (リトライ後も黒フレーム)。PNG 保存前に送出されるため黒い PNG は残らない。
+                // UI はダイアログ (result.Error)、CLI はエラーログと戻り値の双方で失敗を判別できる
+                Debug.LogError($"[AvatarSetupTool] {e.Message}");
+                return CaptureResult.Fail(e.Message);
             }
             finally
             {
@@ -1113,12 +1135,13 @@ namespace Hidano.AvatarSetupTool.Editor
         /// 同じ描画結果を GIF 用に縮小したフレームを返す (描画は 1 回で共用する)。
         /// debugText があれば PNG の iTXt メタデータとしても埋め込む。
         /// checkCancel はタイルループのキャンセル判定として RenderStill へ渡す。
+        /// shotLabel は描画失敗時の診断メッセージに使う構図/方向の識別子 (例 "Avatar full 045")。
         /// </summary>
         private static Color32[] CaptureShot(
             PreviewRenderUtility preview, ViewSpec view, string filePath, bool makeGifFrame,
-            Func<bool> checkCancel, string debugText = null)
+            Func<bool> checkCancel, string shotLabel, string debugText = null)
         {
-            var pixels = RenderStill(preview, view, checkCancel);
+            var pixels = RenderStill(preview, view, checkCancel, shotLabel);
             var texture = new Texture2D(view.RenderWidth, view.RenderHeight, TextureFormat.RGB24, false);
             texture.SetPixels32(pixels);
             var bytes = texture.EncodeToPNG();
@@ -1157,9 +1180,12 @@ namespace Hidano.AvatarSetupTool.Editor
         /// 即破棄し、同時生存を 1 枚に保つ。
         /// checkCancel は各タイルの描画前に呼ばれ、true でキャンセル要求として
         /// OperationCanceledException を送出する (PNG 保存前に脱出するため書きかけのファイルは残らない)。
+        /// タイル読み戻し直後 (合成前) に全画素黒を検査し、黒検出時は同一タイルを同一プレビューで
+        /// 1 回だけ再描画・再検査する。再失敗時は診断情報付きの
+        /// <see cref="CaptureRenderFailedException"/> を送出し、部分結果を返さない。
         /// </summary>
         private static Color32[] RenderStill(
-            PreviewRenderUtility preview, ViewSpec view, Func<bool> checkCancel)
+            PreviewRenderUtility preview, ViewSpec view, Func<bool> checkCancel, string shotLabel)
         {
             var layout = StillLayout(view);
             if (layout.Factor < layout.RequestedFactor)
@@ -1193,10 +1219,39 @@ namespace Hidano.AvatarSetupTool.Editor
                         (float)(view.Center.x + (rect.X + rect.Width * 0.5 - width * 0.5) * worldPerPixel),
                         (float)(view.Center.y + (rect.Y + rect.Height * 0.5 - height * 0.5) * worldPerPixel),
                         view.Center.z);
-                    var texture = RenderView(preview, tileCenter, (float)tileOrtho, view.DepthExtent,
-                        rect.Width * factor, rect.Height * factor);
-                    var pixels = texture.GetPixels32();
-                    Object.DestroyImmediate(texture);
+
+                    Color32[] RenderTilePixels()
+                    {
+                        var texture = RenderView(preview, tileCenter, (float)tileOrtho, view.DepthExtent,
+                            rect.Width * factor, rect.Height * factor);
+                        var tilePixels = texture.GetPixels32();
+                        Object.DestroyImmediate(texture);
+                        return tilePixels;
+                    }
+
+                    // 背景は常に不透明グレーのため全画素黒は描画失敗 (TDR / 確保失敗など)。
+                    // 合成前に検査し、同一タイルを同一プレビューで 1 回だけ再描画・再検査する
+                    var pixels = RenderTilePixels();
+                    if (IsAllBlack(pixels))
+                    {
+                        Debug.LogWarning(
+                            $"[AvatarSetupTool] 黒フレームを検出したためタイルを再描画します: {shotLabel}"
+                            + $" タイル ({tx}, {ty}) / {layout.TilesX}x{layout.TilesY}");
+                        pixels = RenderTilePixels();
+                        if (IsAllBlack(pixels))
+                        {
+                            throw new CaptureRenderFailedException(
+                                $"レンダリングに失敗しました (リトライ後も全画素が黒のままです): {shotLabel}、"
+                                + $"出力解像度 {width}x{height}、"
+                                + $"SSAA 要求 x{layout.RequestedFactor} / 適用 x{factor}、"
+                                + $"タイル ({tx}, {ty}) / {layout.TilesX}x{layout.TilesY}、"
+                                + $"タイルレンダサイズ {rect.Width * factor}x{rect.Height * factor}、"
+                                + $"maxTextureSize={SystemInfo.maxTextureSize}、"
+                                + $"graphicsMemorySize={SystemInfo.graphicsMemorySize}MB。"
+                                + "GPU ドライバの応答停止 (TDR) や VRAM 不足が原因の可能性があります。");
+                        }
+                    }
+
                     DownscaleInto(pixels, rect.Width * factor, factor,
                         result, width, rect.X, rect.Y, rect.Width, rect.Height);
                 }
