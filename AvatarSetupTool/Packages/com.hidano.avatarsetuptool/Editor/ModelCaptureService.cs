@@ -1203,6 +1203,25 @@ namespace Hidano.AvatarSetupTool.Editor
         }
 
         /// <summary>
+        /// 全画素が RGB=(0,0,0) なら true (アルファ無視)。描画失敗 (黒フレーム) の判定に使う。
+        /// 背景は常に不透明グレーのため、正常フレームに全画素黒はあり得ない。
+        /// 非黒画素の発見で早期終了する (正常系はほぼ先頭で終了する)。
+        /// </summary>
+        internal static bool IsAllBlack(Color32[] pixels)
+        {
+            for (var i = 0; i < pixels.Length; i++)
+            {
+                var p = pixels[i];
+                if (p.r != 0 || p.g != 0 || p.b != 0)
+                {
+                    return false;
+                }
+            }
+
+            return true;
+        }
+
+        /// <summary>
         /// source (ボトムアップ行順) をボックス平均で 1/factor に縮小し、dest の指定位置へ書き込む。
         /// </summary>
         internal static void DownscaleInto(
