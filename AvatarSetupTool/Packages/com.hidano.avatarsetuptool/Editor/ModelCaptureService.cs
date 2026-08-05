@@ -366,13 +366,25 @@ namespace Hidano.AvatarSetupTool.Editor
         /// </summary>
         public static long EstimateRequiredBytes(int imageSize, CaptureOutputFormat format, CaptureViewMode viewMode)
         {
+            return EstimateRequiredBytes(
+                imageSize, format, viewMode, SystemInfo.maxTextureSize, SystemInfo.graphicsMemorySize);
+        }
+
+        /// <summary>
+        /// 環境値 (maxTextureSize / graphicsMemoryMb) を引数で受ける実体。
+        /// タイルサイズと適用倍率は実行時と同じレイアウト計算 (<see cref="TileLayout"/>) から取り、
+        /// 見積もりと実行を一致させる。
+        /// </summary>
+        internal static long EstimateRequiredBytes(
+            int imageSize, CaptureOutputFormat format, CaptureViewMode viewMode,
+            int maxTextureSize, int graphicsMemoryMb)
+        {
             var viewCount = viewMode == CaptureViewMode.Both ? 2 : 1;
             var renderPixels = (long)imageSize * imageSize;
-            // RT + 読み戻し Texture2D + GetPixels32 + PNG エンコードバッファ、
-            // 加えてスーパーサンプリングのタイル 1 枚分の読み戻し
-            var stillFactor = imageSize <= 2048 ? 4 : 2;
-            var tileSide = (long)Mathf.Min(imageSize * stillFactor, SystemInfo.maxTextureSize);
-            var bytes = renderPixels * 4 * 4 + tileSide * tileSide * 4 * 2;
+            var layout = TileLayout.Compute(
+                imageSize, imageSize, TileLayout.PreferredFactor(imageSize, imageSize),
+                TileSideLimits.Compute(maxTextureSize, graphicsMemoryMb));
+            var bytes = StillPeakBytes(renderPixels, layout);
             var animPixels = renderPixels / (SuperSampleFactor * SuperSampleFactor);
             if (format == CaptureOutputFormat.Gif)
             {
@@ -386,6 +398,17 @@ namespace Hidano.AvatarSetupTool.Editor
             }
 
             return bytes;
+        }
+
+        /// <summary>
+        /// 静止画 1 枚のピークメモリ (バイト)。新エンコード経路の実バッファ構成に基づく:
+        /// RGB24 合成バッファ (3 bytes/px) + PNG エンコード出力と iTXt コピー
+        /// (圧縮後サイズの安全側概算で 1 byte/px × 2)、加えてタイル読み戻し
+        /// (GetPixels32 配列 + Texture2D の CPU 側コピーで 4 bytes/px × 2)。
+        /// </summary>
+        private static long StillPeakBytes(long renderPixels, TileLayout layout)
+        {
+            return renderPixels * (3 + 1 * 2) + layout.MaxTileRenderPixels * 4 * 2;
         }
 
         /// <summary>メモリ見積もりに対して許容する上限 (実装メモリの半分)。</summary>
@@ -644,10 +667,9 @@ namespace Hidano.AvatarSetupTool.Editor
                     }
 
                     var renderPixels = (long)view.RenderWidth * view.RenderHeight;
-                    // PNG バッファ類 + スーパーサンプリングのタイル 1 枚分の読み戻し。
-                    // タイルサイズは実行時と同じレイアウト計算から取り、見積もりと実行を一致させる
-                    peak = Math.Max(peak,
-                        renderPixels * 4 * 4 + StillLayout(view).MaxTileRenderPixels * 4 * 2);
+                    // 静止画ピークは新エンコード経路の実バッファ構成で算定する。
+                    // タイルサイズ・適用倍率は実行時と同じレイアウト計算から取り、見積もりと実行を一致させる
+                    peak = Math.Max(peak, StillPeakBytes(renderPixels, StillLayout(view)));
                     animPixels += (long)view.AnimWidth * view.AnimHeight;
 
                     if (settings.format == CaptureOutputFormat.Mp4
