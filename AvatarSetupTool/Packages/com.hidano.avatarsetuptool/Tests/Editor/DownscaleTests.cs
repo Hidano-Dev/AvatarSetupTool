@@ -214,6 +214,148 @@ namespace Hidano.AvatarSetupTool.Editor.Tests
             Assert.That(result[3].r, Is.EqualTo(40));
         }
 
+        // ---- 4.2: RGB24 合成バッファ向け縮小合成ヘルパ ----
+        // 合成バッファはボトムアップ行順 (EncodeArrayToPNG の行順が PngEncodeTests で
+        // ボトムアップと確定したことに追随)。タイル読み戻し (ボトムアップ) からの合成は
+        // 行反転なし、GIF 用 top-down への反転は DownscaleRgb24ToColor32 の 1 箇所のみ。
+
+        /// <summary>Color32 ピクセル列をアルファを落とした RGB24 バッファへ変換する (行順は不変)。</summary>
+        private static byte[] ToRgb24(Color32[] pixels)
+        {
+            var buffer = new byte[pixels.Length * 3];
+            for (var i = 0; i < pixels.Length; i++)
+            {
+                buffer[i * 3] = pixels[i].r;
+                buffer[i * 3 + 1] = pixels[i].g;
+                buffer[i * 3 + 2] = pixels[i].b;
+            }
+
+            return buffer;
+        }
+
+        private static void AssertRgb24EqualsColor32(Color32[] expected, byte[] actual)
+        {
+            Assert.That(actual.Length, Is.EqualTo(expected.Length * 3));
+            for (var i = 0; i < expected.Length; i++)
+            {
+                Assert.That(actual[i * 3], Is.EqualTo(expected[i].r), $"r at {i}");
+                Assert.That(actual[i * 3 + 1], Is.EqualTo(expected[i].g), $"g at {i}");
+                Assert.That(actual[i * 3 + 2], Is.EqualTo(expected[i].b), $"b at {i}");
+            }
+        }
+
+        [TestCase(2, 16, 12, 12345u)]
+        [TestCase(4, 16, 16, 67890u)]
+        [TestCase(1, 8, 8, 24680u)]
+        public void DownscaleIntoRgb24_MatchesColor32Baseline(int factor, int sourceWidth, int sourceHeight, uint seed)
+        {
+            // 丸め式が現行 DownscaleInto (1.2 の基準テスト対象) と同一であることを、
+            // 同一入力の全画素チャネル一致で検証する
+            var source = MakePixels(sourceWidth * sourceHeight, seed);
+            var destWidth = sourceWidth / factor;
+            var destHeight = sourceHeight / factor;
+
+            var baseline = new Color32[destWidth * destHeight];
+            ModelCaptureService.DownscaleInto(source, sourceWidth, factor,
+                baseline, destWidth, 0, 0, destWidth, destHeight);
+
+            var actual = new byte[destWidth * destHeight * 3];
+            ModelCaptureService.DownscaleIntoRgb24(source, sourceWidth, factor,
+                actual, destWidth, 0, 0, destWidth, destHeight);
+
+            AssertRgb24EqualsColor32(baseline, actual);
+        }
+
+        [Test]
+        public void DownscaleIntoRgb24_TiledComposition_MatchesSingleDownscale()
+        {
+            // 剰余タイルを含む非一様分割 (幅 4+4+2、高さ 4+2) の合成が全域一括縮小と
+            // 全画素一致し、かつ現行 DownscaleInto の基準結果とも一致する
+            const int factor = 2;
+            const int destWidth = 10;
+            const int destHeight = 6;
+            const int sourceWidth = destWidth * factor;
+            const int sourceHeight = destHeight * factor;
+            var source = MakePixels(sourceWidth * sourceHeight, 13579u);
+
+            var single = new byte[destWidth * destHeight * 3];
+            ModelCaptureService.DownscaleIntoRgb24(source, sourceWidth, factor,
+                single, destWidth, 0, 0, destWidth, destHeight);
+
+            var baseline = new Color32[destWidth * destHeight];
+            ModelCaptureService.DownscaleInto(source, sourceWidth, factor,
+                baseline, destWidth, 0, 0, destWidth, destHeight);
+            AssertRgb24EqualsColor32(baseline, single);
+
+            var blockXs = new[] { (0, 4), (4, 4), (8, 2) };
+            var blockYs = new[] { (0, 4), (4, 2) };
+            var tiled = new byte[destWidth * destHeight * 3];
+            foreach (var (destY, blockHeight) in blockYs)
+            {
+                foreach (var (destX, blockWidth) in blockXs)
+                {
+                    // タイル描画で読み戻される部分ソース (行順は全域ソースと同じ向き) を切り出す
+                    var tileSource = new Color32[blockWidth * factor * blockHeight * factor];
+                    for (var row = 0; row < blockHeight * factor; row++)
+                    {
+                        var srcRow = destY * factor + row;
+                        for (var col = 0; col < blockWidth * factor; col++)
+                        {
+                            tileSource[row * blockWidth * factor + col] =
+                                source[srcRow * sourceWidth + destX * factor + col];
+                        }
+                    }
+
+                    ModelCaptureService.DownscaleIntoRgb24(tileSource, blockWidth * factor, factor,
+                        tiled, destWidth, destX, destY, blockWidth, blockHeight);
+                }
+            }
+
+            Assert.That(tiled, Is.EqualTo(single), "タイル分割合成が全域一括縮小と一致しない");
+        }
+
+        [TestCase(2, 8, 12, 97531u)]
+        [TestCase(1, 6, 4, 86420u)]
+        public void DownscaleRgb24ToColor32_MatchesCurrentGifDownscale(
+            int factor, int destWidth, int destHeight, uint seed)
+        {
+            // GIF フレームの現行同値性: 同一画像に対し現行 Downscale(topDown: true) と
+            // 全画素一致する (行反転位置の移動で画素値が変わらないことの検証)
+            var sourceWidth = destWidth * factor;
+            var sourceHeight = destHeight * factor;
+            var sourcePixels = MakePixels(sourceWidth * sourceHeight, seed);
+
+            var expected = ModelCaptureService.Downscale(
+                sourcePixels, sourceWidth, destWidth, destHeight, topDown: true);
+
+            var actual = ModelCaptureService.DownscaleRgb24ToColor32(
+                ToRgb24(sourcePixels), sourceWidth, sourceHeight, destWidth, destHeight);
+
+            AssertPixelsEqual(expected, actual);
+        }
+
+        [Test]
+        public void DownscaleRgb24ToColor32_FlipsRowsToTopDown()
+        {
+            // 下半分 (ボトムアップ先頭側) を 40、上半分を 200 にした 4x4 RGB24 を 2x2 へ縮小
+            var source = new byte[4 * 4 * 3];
+            for (var i = 0; i < 16; i++)
+            {
+                var value = i < 8 ? (byte)40 : (byte)200;
+                source[i * 3] = value;
+                source[i * 3 + 1] = value;
+                source[i * 3 + 2] = value;
+            }
+
+            var result = ModelCaptureService.DownscaleRgb24ToColor32(source, 4, 4, 2, 2);
+
+            Assert.That(result[0].r, Is.EqualTo(200)); // 先頭行 = 上端 (GIF 用の行順)
+            Assert.That(result[1].r, Is.EqualTo(200));
+            Assert.That(result[2].r, Is.EqualTo(40));
+            Assert.That(result[3].r, Is.EqualTo(40));
+            Assert.That(result[0].a, Is.EqualTo(255));
+        }
+
         [Test]
         public void Downscale_TopDown_MatchesReferenceOnRandomInput()
         {

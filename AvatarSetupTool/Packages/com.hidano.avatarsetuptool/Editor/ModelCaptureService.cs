@@ -1360,6 +1360,93 @@ namespace Hidano.AvatarSetupTool.Editor
             return result;
         }
 
+        /// <summary>
+        /// source (Color32[]、ボトムアップ行順のタイル読み戻し) をボックス平均で 1/factor に縮小し、
+        /// dest (RGB24・3 bytes/px の静止画合成バッファ) の出力矩形
+        /// (destX, destY, blockWidth, blockHeight) へ書き込む。destStride は dest の行幅 (px)。
+        /// 丸めは <see cref="DownscaleInto"/> と同一 (samples/2 加算の四捨五入) で、
+        /// タイル分割合成の結果は全域を一括縮小した結果とチャネル値が一致する。
+        /// EncodeArrayToPNG はバッファをボトムアップ行順で解釈する (PngEncodeTests で確定。
+        /// design.md の top-down 推定は反証済み) ため、合成バッファもボトムアップとし、
+        /// 読み戻しと同じ行順のまま行反転なしで書き込む。
+        /// </summary>
+        internal static void DownscaleIntoRgb24(
+            Color32[] source, int sourceWidth, int factor,
+            byte[] dest, int destStride, int destX, int destY, int blockWidth, int blockHeight)
+        {
+            var samples = factor * factor;
+            for (var y = 0; y < blockHeight; y++)
+            {
+                for (var x = 0; x < blockWidth; x++)
+                {
+                    var r = 0;
+                    var g = 0;
+                    var b = 0;
+                    for (var dy = 0; dy < factor; dy++)
+                    {
+                        var rowStart = (y * factor + dy) * sourceWidth + x * factor;
+                        for (var dx = 0; dx < factor; dx++)
+                        {
+                            var p = source[rowStart + dx];
+                            r += p.r;
+                            g += p.g;
+                            b += p.b;
+                        }
+                    }
+
+                    var offset = ((destY + y) * destStride + destX + x) * 3;
+                    dest[offset] = (byte)((r + samples / 2) / samples);
+                    dest[offset + 1] = (byte)((g + samples / 2) / samples);
+                    dest[offset + 2] = (byte)((b + samples / 2) / samples);
+                }
+            }
+        }
+
+        /// <summary>
+        /// RGB24 (3 bytes/px)・ボトムアップ行順の静止画合成バッファをアニメーション解像度の
+        /// Color32[] (top-down 行順、GIF 用) へボックス平均で縮小する。
+        /// 丸めは <see cref="DownscaleInto"/> と同一、アルファは 255 固定で、
+        /// 現行の Downscale(topDown: true) と同一の画素値になる (GIF フレーム不変の根拠)。
+        /// GIF が要求する top-down への行反転はこの縮小 1 箇所でのみ行う。
+        /// 前提: sourceHeight == destHeight * (sourceWidth / destWidth)。
+        /// </summary>
+        internal static Color32[] DownscaleRgb24ToColor32(
+            byte[] source, int sourceWidth, int sourceHeight, int destWidth, int destHeight)
+        {
+            var factor = sourceWidth / destWidth;
+            var samples = factor * factor;
+            var result = new Color32[destWidth * destHeight];
+            for (var y = 0; y < destHeight; y++)
+            {
+                // 出力行 y (top-down) はボトムアップなソースの上から y 番目のブロック行に対応する
+                var sourceBlockRow = sourceHeight - (y + 1) * factor;
+                for (var x = 0; x < destWidth; x++)
+                {
+                    var r = 0;
+                    var g = 0;
+                    var b = 0;
+                    for (var dy = 0; dy < factor; dy++)
+                    {
+                        var rowStart = ((sourceBlockRow + dy) * sourceWidth + x * factor) * 3;
+                        for (var dx = 0; dx < factor; dx++)
+                        {
+                            r += source[rowStart + dx * 3];
+                            g += source[rowStart + dx * 3 + 1];
+                            b += source[rowStart + dx * 3 + 2];
+                        }
+                    }
+
+                    result[y * destWidth + x] = new Color32(
+                        (byte)((r + samples / 2) / samples),
+                        (byte)((g + samples / 2) / samples),
+                        (byte)((b + samples / 2) / samples),
+                        255);
+                }
+            }
+
+            return result;
+        }
+
         private static Texture2D RenderView(PreviewRenderUtility preview, ViewSpec view)
         {
             return RenderView(
