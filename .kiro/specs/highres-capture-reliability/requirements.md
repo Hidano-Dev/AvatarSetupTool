@@ -30,7 +30,7 @@
 1. When 静止画のレンダリングを開始するとき, the ModelCaptureService shall タイル辺長を安全上限 (約 4096px) と VRAM 予算 (graphicsMemorySize に基づく) の両方から算出し、SSAA 適用後のレンダサイズを当該辺長以下のタイルへ分割して描画する
 2. When SSAA 適用後のレンダサイズが算出されたタイル辺長以下であるとき, the ModelCaptureService shall タイル分割せず単一パスで描画する
 3. The ModelCaptureService shall タイル数の決定において SSAA 倍率の約数などの制約に縛られず、任意の分割数でタイルの描画と合成を行える
-4. When タイル分割で描画した結果を合成するとき, the ModelCaptureService shall 単一 RenderTexture で描画した場合とピクセル単位で同一の合成結果を生成する
+4. When タイル分割で描画した結果を合成するとき, the ModelCaptureService shall 単一 RenderTexture で描画した場合と同一の合成結果を生成する (完全一致を目標とし、浮動小数点丸めに起因する各チャンネル ±1 階調以内の差のみ許容する)
 5. The ModelCaptureService shall タイル 1 枚あたりの RenderTexture 確保サイズが maxTextureSize と算出したタイル辺長のいずれも超えないことを保証する
 
 ### Requirement 2: SSAA 画質の維持
@@ -74,6 +74,6 @@
 #### Acceptance Criteria
 1. The ModelCaptureService shall 改修前後で PNG のピクセル内容・ファイル名規則・iTXt メタデータの仕様を変更しない
 2. The ModelCaptureService shall GIF/MP4/ProRes の各書き出し経路の動作を変更しない
-3. The ModelCaptureService shall 進捗表示およびキャンセル操作の既存動作を維持する
+3. The ModelCaptureService shall 進捗表示およびキャンセル操作の既存動作を維持する (進捗コールバックの契約は不変のまま、タイル単位でのキャンセル判定追加による応答性向上は許容する)
 4. When CLI (`-executeMethod`) から UI なしで実行されるとき, the ModelCaptureService shall エディタ UI に依存せずキャプチャ (黒フレーム検出・リトライ・エラー報告を含む) を完了する
 5. If CLI 実行中にキャプチャがエラーとなった場合, then the ModelCaptureService shall 失敗をログおよび呼び出し元へ判別可能な形で報告する
