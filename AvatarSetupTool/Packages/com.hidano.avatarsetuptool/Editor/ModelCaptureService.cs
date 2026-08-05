@@ -1137,7 +1137,7 @@ namespace Hidano.AvatarSetupTool.Editor
         /// checkCancel はタイルループのキャンセル判定として RenderStill へ渡す。
         /// shotLabel は描画失敗時の診断メッセージに使う構図/方向の識別子 (例 "Avatar full 045")。
         /// </summary>
-        private static Color32[] CaptureShot(
+        internal static Color32[] CaptureShot(
             PreviewRenderUtility preview, ViewSpec view, string filePath, bool makeGifFrame,
             Func<bool> checkCancel, string shotLabel, string debugText = null)
         {
@@ -1191,6 +1191,13 @@ namespace Hidano.AvatarSetupTool.Editor
         }
 
         /// <summary>
+        /// テスト用フック。タイル読み戻し直後のピクセルをこの関数で差し替え、GPU の実失敗を
+        /// 起こさずに黒フレーム失敗経路 (検出 → リトライ → 失敗伝搬) を再現する。
+        /// 製品経路では常に null (呼び出しごとのオーバーヘッドは null チェックのみ)。
+        /// </summary>
+        internal static Func<Color32[], Color32[]> TileReadbackHook;
+
+        /// <summary>
         /// レイアウトを引数で受ける実体。製品経路は <see cref="StillLayout"/> の結果を渡し、
         /// 等価性テストは辺長上限を強制的に絞ったレイアウトを注入して
         /// 多タイル描画と単一パス描画を同一フローで比較する。
@@ -1237,7 +1244,7 @@ namespace Hidano.AvatarSetupTool.Editor
                             rect.Width * factor, rect.Height * factor);
                         var tilePixels = texture.GetPixels32();
                         Object.DestroyImmediate(texture);
-                        return tilePixels;
+                        return TileReadbackHook == null ? tilePixels : TileReadbackHook(tilePixels);
                     }
 
                     // 背景は常に不透明グレーのため全画素黒は描画失敗 (TDR / 確保失敗など)。
