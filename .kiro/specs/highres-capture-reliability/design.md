@@ -220,7 +220,7 @@ flowchart TB
 
 **Responsibilities & Constraints**
 - 入力 (出力サイズ・希望倍率・辺長上限) から決定的にレイアウトを算出する。Unity API を呼ばない (環境値は引数で受ける) — 単体テストの前提。
-- 不変条件: (a) 全タイルの矩形は出力ピクセル空間を重複・欠落なく被覆する。(b) 各タイルのレンダサイズ `blockSide × factor` は辺長上限以下。(c) タイル境界は常に出力ピクセル境界 (= SSAA 倍率 × 出力 px のレンダ境界) に整列する — ピクセル同一合成 (1.4) の根拠。
+- 不変条件: (a) 全タイルの矩形は出力ピクセル空間を重複・欠落なく被覆する。(b) 各タイルのレンダサイズ `blockSide × factor` は辺長上限以下。(c) タイル境界は常に出力ピクセル境界 (= SSAA 倍率 × 出力 px のレンダ境界) に整列する — 合成の完全一致目標 (1.4。各チャンネル ±1 階調以内の差のみ許容) の根拠。
 - SSAA 倍率: 希望倍率 (最長辺 ≤2048 → 4、超 → 2。現行と同一) をそのまま採用。`tileSideLimit / factor < MinBlockSide (64)` の縮退時のみ倍率を段階的に下げ、呼び出し側が警告ログを出せるよう「要求倍率と適用倍率」を結果に含める (2.3)。
 
 **Dependencies**
@@ -320,9 +320,9 @@ internal static bool IsAllBlack(Color32[] pixels);
 | Requirements | 1.1, 1.2, 1.3, 1.4, 3.1, 3.2, 6.3 |
 
 **Responsibilities & Constraints**
-- タイルごとに: 出力ピクセル矩形 → ワールド空間カメラ矩形の換算 (正射影)。`worldPerPixel = 2 * OrthoSize / outputHeight` を基準に、`tileOrtho = OrthoSize * rect.Height / outputHeight`、タイル中心 = 構図中心 + ピクセルオフセット換算。非一様タイル (端の剰余) でもピクセル境界に正確に一致させる。
+- タイルごとに: 出力ピクセル矩形 → ワールド空間カメラ矩形の換算 (正射影)。**精度規約 (1.4)**: タイル矩形の整数ピクセルオフセットを起点とし、`orthoSize`・中心座標への換算 (`worldPerPixel = 2 * OrthoSize / outputHeight`、`tileOrtho = OrthoSize * rect.Height / outputHeight`、タイル中心 = 構図中心 + ピクセルオフセット換算) は **double で計算し、カメラへ設定する直前に float 化**する。非一様タイル (端の剰余) でもピクセル境界に正確に一致させる。
 - 描画 → `GetPixels32` → `IsAllBlack` 検査 → (黒なら同一タイルを 1 回だけ再描画・再検査。再失敗で `CaptureRenderFailedException`) → `DownscaleIntoRgb24` で合成バッファへ書き込み。
-- 進捗・キャンセル: 既存どおり `CaptureShot` 単位の進捗コールバックを維持する (タイル単位のコールバック追加は行わない — 6.3 の「既存動作の維持」を厳守)。
+- 進捗・キャンセル (6.3): 進捗コールバック契約 (テキスト・進捗値の粒度・呼び出しシグネチャ) は不変のまま、タイルループの各反復前に**直前と同一のテキスト・進捗値**で `CancelRequested` を追加呼び出しし、高解像度撮影中のキャンセル応答性を高める。キャンセル検出時は `OperationCanceledException` を送出し、`Capture` が捕捉して既存の `CaptureResult.Cancel()` へ変換する。PNG 書き込みは合成完了後にのみ行われるため、タイル途中キャンセルで書きかけの PNG が残ることはない。
 - タイル用 `Texture2D` は各タイル処理後に即 `DestroyImmediate` し、同時生存を 1 枚に保つ。
 
 **Dependencies**
@@ -337,8 +337,11 @@ internal static bool IsAllBlack(Color32[] pixels);
 /// 静止画 1 枚をタイル分割 SSAA 描画し、RGB24 (3 bytes/px)・top-down 行順の
 /// 合成バッファを返す。描画失敗 (リトライ後も全画素黒) 時は
 /// CaptureRenderFailedException を送出し、部分結果を返さない。
+/// checkCancel は各タイルの描画前に呼ばれ、true でキャンセル要求として
+/// OperationCanceledException を送出する (CaptureShot が直前の進捗テキスト・
+/// 進捗値をキャプチャしたクロージャを渡す — コールバック契約は不変)。
 /// </summary>
-private static byte[] RenderStill(PreviewRenderUtility preview, ViewSpec view);
+private static byte[] RenderStill(PreviewRenderUtility preview, ViewSpec view, Func<bool> checkCancel);
 
 /// <summary>
 /// source (Color32[]、ボトムアップ行順) をボックス平均で 1/factor に縮小し、
@@ -355,9 +358,9 @@ internal static void DownscaleIntoRgb24(
 - Invariants: 既存 `DownscaleInto` (Color32 版) は動画/GIF 経路のため無変更で残す
 
 **Implementation Notes**
-- Integration: 現行 `RenderStill` の一様タイル前提 (`tileOrtho = OrthoSize / tilesY` 等) を `TileRect` ベースの換算へ置換。`TileCount` / `TilePixels` は削除し `TileLayout` へ一本化。
-- Validation: TileRenderEquivalenceTests (小サイズ・強制多タイル vs 単一パスの全ピクセル比較、EditMode で PreviewRenderUtility を直接使用)。
-- Risks: 非一様タイル境界のラスタライズ誤差 — 矩形を整数ピクセルで定義しカメラを厳密換算することで防ぐ。等価性テストで検出可能。
+- Integration: 現行 `RenderStill` の一様タイル前提 (`tileOrtho = OrthoSize / tilesY` 等) を `TileRect` ベースの換算へ置換。`TileCount` / `TilePixels` は削除し `TileLayout` へ一本化。`CaptureShot` は `Capture` から受けた進捗コールバックと直前の進捗テキスト・進捗値をクロージャに束ねて `checkCancel` として渡す。
+- Validation: TileRenderEquivalenceTests (小サイズ・強制多タイル vs 単一パスの全ピクセル比較、EditMode で PreviewRenderUtility を直接使用)。**必須ケース**: 剰余タイルを含む不均等分割、非正方形構図、非 2 冪の分割数 (例 3×2)。
+- Risks: 非一様タイル境界のラスタライズ誤差 — 矩形を整数ピクセル境界で定義し、カメラ換算を double で行って最後に float 化することで抑止。等価性テストで検出可能。**Contingency (1.4)**: 実機で差が検出された場合は、各チャンネル ±1 階調以内であることをテストで確認して合格とする (AC 1.4 の許容範囲)。単一パスフォールバックは採用しない。
 
 ### エラー処理層
 
@@ -490,6 +493,8 @@ internal static Color32[] DownscaleRgb24ToColor32(
 | EncodeArrayToPNG 出力 + WithText | — | 〜134 MB |
 | **概算ピーク** | **1.5〜2 GB** | **約 0.35〜0.5 GB** |
 
+> 注記: `EncodeArrayToPNG` がネイティブ側で行う一時確保 (zlib 圧縮の作業バッファ等) はマネージヒープ外であり、本表には含まれない。実測時は Total Used Memory 系カウンタ (下記リリース前チェックリスト参照) で包括的に確認する。
+
 ## Error Handling
 
 ### Error Strategy
@@ -500,7 +505,7 @@ internal static Color32[] DownscaleRgb24ToColor32(
 - **事前検証エラー (メモリ超過・maxTextureSize 超過・H.264 上限)**: 現行どおり `ValidateMemory` が撮影前に `CaptureResult.Fail` を返す。新経路の見積もり式により、実際には撮影可能な 8K 設定を誤拒否しない (5.2)。
 - **SSAA 縮退 (極端な低スペック)**: エラーではなく警告。`Debug.LogWarning` で要求倍率と適用倍率を明示し撮影は続行する (2.3)。
 - **エンコード失敗 (EncodeArrayToPNG が null/空を返す)**: 防衛的にチェックし、`CaptureRenderFailedException` と同経路で失敗報告する (黒 PNG 同様、壊れたファイルを残さない)。
-- **キャンセル**: 現行の `CaptureResult.Cancel` 経路を無変更で維持 (6.3)。
+- **キャンセル**: 戻り値契約は現行の `CaptureResult.Cancel` 経路を維持 (6.3)。タイルループ内のキャンセル検出は `OperationCanceledException` で脱出し、`Capture` が `CaptureResult.Cancel()` へ変換する。タイル途中キャンセルでは PNG 書き込み前に脱出するため、書きかけの PNG は残らない。
 
 ### Monitoring
 - 失敗時: `Debug.LogError` (CLI ログで検出可能)。リトライ発生時: `Debug.LogWarning` でタイル座標を記録 (成功しても環境の予兆として可視化)。
@@ -516,14 +521,18 @@ internal static Color32[] DownscaleRgb24ToColor32(
 5. **PngMetadataTests**: `WithText` の挿入位置 (IHDR 直後)・CRC・UTF-8 本文のラウンドトリップ (4.5)
 
 ### Integration Tests (EditMode、GPU 使用)
-1. **TileRenderEquivalenceTests**: 小サイズ (例 512px) で tileSideLimit を強制的に絞り、多タイル描画と単一パス描画の全ピクセル一致を検証 (1.4)
+1. **TileRenderEquivalenceTests**: 小サイズ (例 512px) で tileSideLimit を強制的に絞り、多タイル描画と単一パス描画の全ピクセル比較を行う (1.4)。**必須ケース**: (a) 剰余タイルを含む不均等分割、(b) 非正方形構図 (幅拡張された full 構図相当)、(c) 非 2 冪の分割数 (例 3×2)。完全一致を目標とし、差がある場合は各チャンネル ±1 階調以内であることを合格条件とする (AC 1.4)
 2. **Capture 経路スモーク**: 小型テストモデルで `Capture` を実行し、PNG が生成され iTXt が読めること、`CaptureResult.Success` を確認 (6.1, 6.4 相当のロジック面)
 3. **黒フレーム失敗経路**: `RenderStill` 相当をテスト用フックで全黒化し、リトライ 1 回と `CaptureRenderFailedException` の送出、PNG 非生成を確認 (3.2, 3.3)
 
-### Performance / Memory (手動検証、リリース前チェックリスト)
-1. 8K / Both / ImagesOnly を実機で撮影し、Profiler で CPU ピークが 1GB を大きく下回ることを確認 (4.2)
-2. 低 VRAM 環境 (または graphicsMemorySize の擬似的な低値) で 8K 撮影が SSAA 降格なしに完了することを確認 (2.2)
-3. 撮影後の見積もり誤差 (`TimeCalibrationFactor` の収束) を確認 (5.3)
+### リリース前チェックリスト (実機・手動検証)
+1. **8K ピークメモリ測定 (4.2)**: 8K / Both / ImagesOnly を実機で撮影し、Unity Profiler で CPU 側ピークメモリを測定する。
+   - 手順: 撮影直前に GC を 1 回発生させてベースラインを取り、Profiler の **Memory モジュールの「Total Used Memory」(System Used Memory カウンタ)** の撮影中ピークとベースラインの差分を CPU 側ピークとして読む。補助として **CPU モジュールの「GC Allocated In Frame」** でマネージ割り当ての急増フレームを特定する (ネイティブ側一時確保も Total Used Memory に含まれる — Data Models の注記参照)。
+   - **合格閾値: 8K 静止画 1 枚あたりの CPU 側ピークメモリ < 1GB** (設計目標 0.35〜0.5GB)。
+   - 実測値 (ベースライン・ピーク・差分) は validate-impl 時の検証レポートに記録する。
+2. **タイル継ぎ目スポット比較 (1.4)**: 実機 8K 出力に対し、`TileLayout` から算出したタイル境界に当たる行・列の画素を境界を跨いで比較し、継ぎ目起因の段差がないことを確認する。差が検出された場合は各チャンネル ±1 階調以内であることをもって合格とする (AC 1.4 の許容範囲。単一パスフォールバックは採用しない)。結果は validate-impl の検証レポートに記録する。
+3. 低 VRAM 環境 (または graphicsMemorySize の擬似的な低値) で 8K 撮影が SSAA 降格なしに完了することを確認 (2.2)
+4. 撮影後の見積もり誤差 (`TimeCalibrationFactor` の収束) を確認 (5.3)
 
 ## Migration Strategy
 
