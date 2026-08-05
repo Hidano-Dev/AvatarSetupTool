@@ -58,9 +58,20 @@ namespace Hidano.AvatarSetupTool.Editor
         }
 
         /// <summary>
+        /// 解像度既定の SSAA 倍率。出力の最長辺が 2048px 以下なら 4、超なら 2。
+        /// VRAM 予算による降格は行わない (VRAM 制約はタイル分割が吸収する)。
+        /// </summary>
+        public static int PreferredFactor(int outputWidth, int outputHeight)
+        {
+            return Math.Max(outputWidth, outputHeight) <= TileSideLimits.HighSsaaMaxSide ? 4 : 2;
+        }
+
+        /// <summary>
         /// レイアウトを算出する。outputWidth/Height は出力 PNG のピクセルサイズ、
         /// preferredFactor は解像度既定の SSAA 倍率、tileSideLimit はレンダ辺長上限 (px)。
         /// 同一入力に対し常に同一結果を返す (決定的)。
+        /// 辺長上限を倍率で割ったブロック辺が MinBlockSide を下回る縮退時のみ倍率を
+        /// 段階的に下げ、差分は RequestedFactor と Factor で確認できる。
         /// </summary>
         public static TileLayout Compute(
             int outputWidth, int outputHeight, int preferredFactor, int tileSideLimit)
@@ -86,7 +97,13 @@ namespace Hidano.AvatarSetupTool.Editor
                     $"{TileSideLimits.MinBlockSide} 以上が必要です。");
             }
 
+            // 縮退時 (ブロック辺が最小値を下回る) のみ段階的に倍率を下げる。
+            // tileSideLimit >= MinBlockSide が保証されているため factor == 1 で必ず成立する
             var factor = preferredFactor;
+            while (factor > 1 && tileSideLimit / factor < TileSideLimits.MinBlockSide)
+            {
+                factor /= 2;
+            }
 
             // タイル 1 辺のレンダサイズ blockSide * factor が上限以下になる最大の出力 px 幅
             var blockSide = tileSideLimit / factor;
@@ -144,6 +161,9 @@ namespace Hidano.AvatarSetupTool.Editor
 
         /// <summary>タイルの最小ブロック辺 (出力 px)。これを下回る縮退時のみ SSAA 倍率を下げる。</summary>
         internal const int MinBlockSide = 64;
+
+        /// <summary>SSAA 倍率 4 を適用する出力最長辺の上限 (px)。これを超えると倍率 2。</summary>
+        internal const int HighSsaaMaxSide = 2048;
 
         /// <summary>
         /// min(SafeTileSide, maxTextureSize, VRAM 予算由来の辺長) を返す。
