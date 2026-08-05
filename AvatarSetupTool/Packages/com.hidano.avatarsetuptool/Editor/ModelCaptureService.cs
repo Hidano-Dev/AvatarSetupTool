@@ -220,10 +220,16 @@ namespace Hidano.AvatarSetupTool.Editor
                         {
                             target.transform.rotation = Quaternion.Euler(0f, yaw, 0f);
 
-                            if (CancelRequested(progress, $"{captureName}: {dirName}", step / (float)total))
+                            var progressText = $"{captureName}: {dirName}";
+                            var progressRatio = step / (float)total;
+                            if (CancelRequested(progress, progressText, progressRatio))
                             {
                                 return CaptureResult.Cancel();
                             }
+
+                            // タイルループ内のキャンセル判定用。直前と同一のテキスト・進捗値で
+                            // 問い合わせるため、進捗表示のコールバック契約は変えずに応答性だけ高める
+                            bool CheckCancel() => CancelRequested(progress, progressText, progressRatio);
 
                             var makeGifFrame = settings.format == CaptureOutputFormat.Gif;
 
@@ -233,7 +239,8 @@ namespace Hidano.AvatarSetupTool.Editor
                                 var fullName = ResolveName(stillPattern, dirName, "full",
                                     fullView.RenderWidth, fullView.RenderHeight);
                                 var fullFrame = CaptureShot(preview, fullView,
-                                    Path.Combine(outputDir, fullName + ".png"), makeGifFrame, debugText);
+                                    Path.Combine(outputDir, fullName + ".png"), makeGifFrame,
+                                    CheckCancel, debugText);
                                 step++;
                                 if (makeGifFrame)
                                 {
@@ -247,7 +254,8 @@ namespace Hidano.AvatarSetupTool.Editor
                                 var faceName = ResolveName(stillPattern, dirName, "BS",
                                     faceView.RenderWidth, faceView.RenderHeight);
                                 var faceFrame = CaptureShot(preview, faceView,
-                                    Path.Combine(outputDir, faceName + ".png"), makeGifFrame, debugText);
+                                    Path.Combine(outputDir, faceName + ".png"), makeGifFrame,
+                                    CheckCancel, debugText);
                                 step++;
                                 if (makeGifFrame)
                                 {
@@ -315,6 +323,11 @@ namespace Hidano.AvatarSetupTool.Editor
                 Debug.Log($"[AvatarSetupTool] {modelName}: {summary}を保存しました: {outputDir}");
                 UpdateTimeCalibration(stopwatch.Elapsed.TotalSeconds, EstimateSecondsForViews(views, settings));
                 return new CaptureResult { Success = true, OutputDirectory = outputDir };
+            }
+            catch (OperationCanceledException)
+            {
+                // タイルループ内でのキャンセル検出。PNG 保存前に脱出しているため書きかけのファイルは残らない
+                return CaptureResult.Cancel();
             }
             finally
             {
@@ -457,7 +470,7 @@ namespace Hidano.AvatarSetupTool.Editor
                     }
 
                     var renderPixels = (double)view.RenderWidth * view.RenderHeight;
-                    var stillFactor = StillSuperSample(view);
+                    var stillFactor = StillLayout(view).Factor;
                     var animPixels = (double)view.AnimWidth * view.AnimHeight;
                     seconds += Directions.Length
                         * (renderPixels * stillFactor * stillFactor / StillRenderRate
@@ -608,9 +621,10 @@ namespace Hidano.AvatarSetupTool.Editor
                     }
 
                     var renderPixels = (long)view.RenderWidth * view.RenderHeight;
-                    // PNG バッファ類 + スーパーサンプリングのタイル 1 枚分の読み戻し
+                    // PNG バッファ類 + スーパーサンプリングのタイル 1 枚分の読み戻し。
+                    // タイルサイズは実行時と同じレイアウト計算から取り、見積もりと実行を一致させる
                     peak = Math.Max(peak,
-                        renderPixels * 4 * 4 + TilePixels(view, StillSuperSample(view)) * 4 * 2);
+                        renderPixels * 4 * 4 + StillLayout(view).MaxTileRenderPixels * 4 * 2);
                     animPixels += (long)view.AnimWidth * view.AnimHeight;
 
                     if (settings.format == CaptureOutputFormat.Mp4
@@ -1098,12 +1112,13 @@ namespace Hidano.AvatarSetupTool.Editor
         /// 1 方向分をスーパーサンプリング付きで描画して PNG に保存し、makeGifFrame が真なら
         /// 同じ描画結果を GIF 用に縮小したフレームを返す (描画は 1 回で共用する)。
         /// debugText があれば PNG の iTXt メタデータとしても埋め込む。
+        /// checkCancel はタイルループのキャンセル判定として RenderStill へ渡す。
         /// </summary>
         private static Color32[] CaptureShot(
             PreviewRenderUtility preview, ViewSpec view, string filePath, bool makeGifFrame,
-            string debugText = null)
+            Func<bool> checkCancel, string debugText = null)
         {
-            var pixels = RenderStill(preview, view);
+            var pixels = RenderStill(preview, view, checkCancel);
             var texture = new Texture2D(view.RenderWidth, view.RenderHeight, TextureFormat.RGB24, false);
             texture.SetPixels32(pixels);
             var bytes = texture.EncodeToPNG();
@@ -1120,82 +1135,70 @@ namespace Hidano.AvatarSetupTool.Editor
         }
 
         /// <summary>
-        /// PNG 用のスーパーサンプリング倍率。プレビュー描画は MSAA もポストプロセス AA も
-        /// 効かないため、倍率分だけ高解像度で描画してボックス平均で縮小しアンチエイリアスにする。
-        /// 低解像度ほど高い倍率を使い、GPU メモリの目安を超える場合は倍率を下げる。
+        /// 静止画のタイル分割レイアウト。環境値 (maxTextureSize / graphicsMemorySize) を注入して
+        /// 算出し、描画 (<see cref="RenderStill"/>) と見積もり (ValidateMemory /
+        /// EstimateSecondsForViews) が同一のレイアウト結果を参照する。
+        /// SSAA 倍率は解像度既定 (最長辺 2048px 以下は 4、超は 2) で、VRAM 制約はタイル分割が
+        /// 吸収するため VRAM を理由とする降格は行わない。
         /// </summary>
-        private static int StillSuperSample(ViewSpec view)
+        private static TileLayout StillLayout(ViewSpec view)
         {
-            var largest = Mathf.Max(view.RenderWidth, view.RenderHeight);
-            var factor = largest <= 2048 ? 4 : 2;
-
-            // タイル 1 枚あたり float16 カラー + 深度でおよそ 12 bytes/px。VRAM の半分を目安にする
-            var budget = (long)SystemInfo.graphicsMemorySize * 1024 * 1024 / 2;
-            while (factor > 1 && TilePixels(view, factor) * 12 > budget)
-            {
-                factor /= 2;
-            }
-
-            return factor;
-        }
-
-        /// <summary>倍率適用後のタイル 1 枚のピクセル数 (メモリ見積もり用)。</summary>
-        private static long TilePixels(ViewSpec view, int factor)
-        {
-            var tileWidth = view.RenderWidth * factor / TileCount(view.RenderWidth * factor, factor);
-            var tileHeight = view.RenderHeight * factor / TileCount(view.RenderHeight * factor, factor);
-            return (long)tileWidth * tileHeight;
-        }
-
-        /// <summary>
-        /// 一辺をテクスチャ上限内に収めるための分割数。factor の約数 (2 の冪) から選ぶので
-        /// 分割後の辺長は必ず整数かつダウンスケール境界に揃う。
-        /// </summary>
-        private static int TileCount(int stillSize, int factor)
-        {
-            for (var tiles = 1; tiles < factor; tiles *= 2)
-            {
-                if (stillSize / tiles <= SystemInfo.maxTextureSize)
-                {
-                    return tiles;
-                }
-            }
-
-            return factor;
+            return TileLayout.Compute(
+                view.RenderWidth, view.RenderHeight,
+                TileLayout.PreferredFactor(view.RenderWidth, view.RenderHeight),
+                TileSideLimits.Compute(SystemInfo.maxTextureSize, SystemInfo.graphicsMemorySize));
         }
 
         /// <summary>
         /// 静止画 1 枚をスーパーサンプリング付きで描画し、出力解像度のピクセル (ボトムアップ行順)
-        /// を返す。倍率適用後のサイズがテクスチャ上限を超える場合は、正射影カメラを
-        /// ずらしながらタイル状に分割描画する (正射影なので分割しても結果は一致する)。
+        /// を返す。<see cref="TileLayout"/> の決定に従い、正射影カメラをずらしながら非一様タイル
+        /// (端タイルは剰余サイズ) で分割描画する (正射影なので分割しても結果は一致する。
+        /// 単一パスは 1×1 タイルとして同一フローで扱う)。タイル用テクスチャは各タイル処理後に
+        /// 即破棄し、同時生存を 1 枚に保つ。
+        /// checkCancel は各タイルの描画前に呼ばれ、true でキャンセル要求として
+        /// OperationCanceledException を送出する (PNG 保存前に脱出するため書きかけのファイルは残らない)。
         /// </summary>
-        private static Color32[] RenderStill(PreviewRenderUtility preview, ViewSpec view)
+        private static Color32[] RenderStill(
+            PreviewRenderUtility preview, ViewSpec view, Func<bool> checkCancel)
         {
-            var factor = StillSuperSample(view);
+            var layout = StillLayout(view);
+            if (layout.Factor < layout.RequestedFactor)
+            {
+                Debug.LogWarning(
+                    $"[AvatarSetupTool] SSAA 倍率を要求値 {layout.RequestedFactor} から {layout.Factor} に下げました"
+                    + $" ({view.RenderWidth}x{view.RenderHeight}、レンダ辺長上限が極端に小さい環境のため)。");
+            }
+
             var width = view.RenderWidth;
             var height = view.RenderHeight;
+            var factor = layout.Factor;
             var result = new Color32[width * height];
-            var tilesX = TileCount(width * factor, factor);
-            var tilesY = TileCount(height * factor, factor);
-            var blockWidth = width / tilesX; // RenderWidth / RenderHeight は 4 の倍数なので割り切れる
-            var blockHeight = height / tilesY;
-            var halfWidth = view.OrthoSize * width / height;
 
-            for (var ty = 0; ty < tilesY; ty++)
+            // タイル矩形 (出力 px) → カメラ矩形 (orthoSize・中心座標) の換算は double で計算し、
+            // カメラへ設定する直前に float 化する。端の剰余タイルでもピクセル境界に正確に一致させる
+            var worldPerPixel = 2.0 * view.OrthoSize / height;
+
+            for (var ty = 0; ty < layout.TilesY; ty++)
             {
-                for (var tx = 0; tx < tilesX; tx++)
+                for (var tx = 0; tx < layout.TilesX; tx++)
                 {
-                    var tileOrtho = view.OrthoSize / tilesY;
-                    var tileHalfWidth = halfWidth / tilesX;
+                    if (checkCancel != null && checkCancel())
+                    {
+                        throw new OperationCanceledException();
+                    }
+
+                    var rect = layout.GetTile(tx, ty);
+                    var tileOrtho = view.OrthoSize * (double)rect.Height / height;
                     var tileCenter = new Vector3(
-                        view.Center.x - halfWidth + (2 * tx + 1) * tileHalfWidth,
-                        view.Center.y - view.OrthoSize + (2 * ty + 1) * tileOrtho,
+                        (float)(view.Center.x + (rect.X + rect.Width * 0.5 - width * 0.5) * worldPerPixel),
+                        (float)(view.Center.y + (rect.Y + rect.Height * 0.5 - height * 0.5) * worldPerPixel),
                         view.Center.z);
-                    var texture = RenderView(preview, tileCenter, tileOrtho, view.DepthExtent,
-                        blockWidth * factor, blockHeight * factor);
-                    DownscaleInto(texture.GetPixels32(), blockWidth * factor, factor,
-                        result, width, tx * blockWidth, ty * blockHeight, blockWidth, blockHeight);
+                    var texture = RenderView(preview, tileCenter, (float)tileOrtho, view.DepthExtent,
+                        rect.Width * factor, rect.Height * factor);
+                    var pixels = texture.GetPixels32();
                     Object.DestroyImmediate(texture);
+                    DownscaleInto(pixels, rect.Width * factor, factor,
+                        result, width, rect.X, rect.Y, rect.Width, rect.Height);
                 }
             }
 
