@@ -1205,7 +1205,7 @@ namespace Hidano.AvatarSetupTool.Editor
         /// <summary>
         /// source (ボトムアップ行順) をボックス平均で 1/factor に縮小し、dest の指定位置へ書き込む。
         /// </summary>
-        private static void DownscaleInto(
+        internal static void DownscaleInto(
             Color32[] source, int sourceWidth, int factor,
             Color32[] dest, int destStride, int destX, int destY, int blockWidth, int blockHeight)
         {
@@ -1243,7 +1243,7 @@ namespace Hidano.AvatarSetupTool.Editor
         /// source は下端の行から始まる (ボトムアップ)。GIF はトップダウンの行順が
         /// 必要なため topDown 指定で上下反転し、MP4 (SetPixels32) はそのままの行順で返す。
         /// </summary>
-        private static Color32[] Downscale(
+        internal static Color32[] Downscale(
             Color32[] source, int sourceWidth, int destWidth, int destHeight, bool topDown)
         {
             var factor = sourceWidth / destWidth;
