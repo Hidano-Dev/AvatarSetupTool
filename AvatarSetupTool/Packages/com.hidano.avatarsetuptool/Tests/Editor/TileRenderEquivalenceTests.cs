@@ -95,13 +95,13 @@ namespace Hidano.AvatarSetupTool.Editor.Tests
         /// <summary>
         /// シーンが実際に描画されている (背景一色に潰れていない) ことの前提確認。
         /// これが失敗する場合は等価性比較自体が無意味 (空画像どうしの一致) になっている。
+        /// pixels は RenderStill が返す RGB24 (3 bytes/px) 合成バッファ。
         /// </summary>
-        private static void AssertSceneHasVariation(Color32[] pixels)
+        private static void AssertSceneHasVariation(byte[] pixels)
         {
-            var first = pixels[0];
-            for (var i = 1; i < pixels.Length; i++)
+            for (var i = 3; i + 2 < pixels.Length; i += 3)
             {
-                if (pixels[i].r != first.r || pixels[i].g != first.g || pixels[i].b != first.b)
+                if (pixels[i] != pixels[0] || pixels[i + 1] != pixels[1] || pixels[i + 2] != pixels[2])
                 {
                     return;
                 }
@@ -110,31 +110,39 @@ namespace Hidano.AvatarSetupTool.Editor.Tests
             Assert.Fail("前提: 描画結果が単色でシーンが描画されていません。");
         }
 
-        /// <summary>全ピクセルを比較し、各チャンネル ±1 階調を超える差を失敗として報告する。</summary>
-        private static void AssertEquivalent(Color32[] expected, Color32[] actual, int width, int height)
+        /// <summary>
+        /// 全ピクセルを比較し、各チャンネル ±1 階調を超える差を失敗として報告する。
+        /// expected / actual は RenderStill が返す RGB24 (3 bytes/px) 合成バッファ。
+        /// </summary>
+        private static void AssertEquivalent(byte[] expected, byte[] actual, int width, int height)
         {
             Assert.That(actual.Length, Is.EqualTo(expected.Length));
 
             var mismatches = new List<string>();
             var exactMatches = 0;
-            for (var i = 0; i < expected.Length; i++)
+            var pixelCount = expected.Length / 3;
+            for (var i = 0; i < pixelCount; i++)
             {
-                var e = expected[i];
-                var a = actual[i];
-                if (e.r == a.r && e.g == a.g && e.b == a.b && e.a == a.a)
+                var offset = i * 3;
+                var er = expected[offset];
+                var eg = expected[offset + 1];
+                var eb = expected[offset + 2];
+                var ar = actual[offset];
+                var ag = actual[offset + 1];
+                var ab = actual[offset + 2];
+                if (er == ar && eg == ag && eb == ab)
                 {
                     exactMatches++;
                     continue;
                 }
 
-                if (Mathf.Abs(e.r - a.r) > 1 || Mathf.Abs(e.g - a.g) > 1
-                    || Mathf.Abs(e.b - a.b) > 1 || e.a != a.a)
+                if (Mathf.Abs(er - ar) > 1 || Mathf.Abs(eg - ag) > 1 || Mathf.Abs(eb - ab) > 1)
                 {
                     if (mismatches.Count < 10)
                     {
                         mismatches.Add(
-                            $"({i % width}, {i / width}): 単一 ({e.r},{e.g},{e.b},{e.a})"
-                            + $" vs タイル ({a.r},{a.g},{a.b},{a.a})");
+                            $"({i % width}, {i / width}): 単一 ({er},{eg},{eb})"
+                            + $" vs タイル ({ar},{ag},{ab})");
                     }
                     else
                     {
@@ -145,8 +153,8 @@ namespace Hidano.AvatarSetupTool.Editor.Tests
             }
 
             TestContext.WriteLine(
-                $"{width}x{height}: 完全一致 {exactMatches}/{expected.Length} px"
-                + $" ({exactMatches * 100.0 / expected.Length:F2}%)");
+                $"{width}x{height}: 完全一致 {exactMatches}/{pixelCount} px"
+                + $" ({exactMatches * 100.0 / pixelCount:F2}%)");
             Assert.That(mismatches, Is.Empty, "±1 階調を超える差のあるピクセル");
         }
 

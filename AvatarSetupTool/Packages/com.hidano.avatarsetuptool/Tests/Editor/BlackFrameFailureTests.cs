@@ -87,7 +87,8 @@ namespace Hidano.AvatarSetupTool.Editor.Tests
             var result = ModelCaptureService.RenderStill(preview, view, layout, null, "test full 000");
 
             Assert.That(renderCount, Is.EqualTo(2), "リトライ 1 回で復帰すること");
-            Assert.That(ModelCaptureService.IsAllBlack(result), Is.False, "復帰後は正常な描画結果を返すこと");
+            // RenderStill の返り値は RGB24 合成バッファ。背景は不透明グレーのため正常なら必ず非黒
+            Assert.That(Array.Exists(result, b => b != 0), Is.True, "復帰後は正常な描画結果 (非黒) を返すこと");
         }
 
         [Test]

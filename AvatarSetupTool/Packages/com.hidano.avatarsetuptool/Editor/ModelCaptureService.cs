@@ -4,6 +4,7 @@ using System.IO;
 using System.Linq;
 using UnityEditor;
 using UnityEngine;
+using UnityEngine.Experimental.Rendering;
 using Object = UnityEngine.Object;
 
 namespace Hidano.AvatarSetupTool.Editor
@@ -1133,6 +1134,10 @@ namespace Hidano.AvatarSetupTool.Editor
         /// <summary>
         /// 1 方向分をスーパーサンプリング付きで描画して PNG に保存し、makeGifFrame が真なら
         /// 同じ描画結果を GIF 用に縮小したフレームを返す (描画は 1 回で共用する)。
+        /// RGB24 合成バッファを <see cref="ImageConversion.EncodeArrayToPNG"/> で直接 PNG 化する
+        /// (Texture2D の全面中間コピーを経由しない省メモリ経路)。エンコード結果が null/空の場合は
+        /// 防衛的に検出し、黒フレームと同経路 (<see cref="CaptureRenderFailedException"/>) で
+        /// 失敗報告して壊れたファイルを残さない。
         /// debugText があれば PNG の iTXt メタデータとしても埋め込む。
         /// checkCancel はタイルループのキャンセル判定として RenderStill へ渡す。
         /// shotLabel は描画失敗時の診断メッセージに使う構図/方向の識別子 (例 "Avatar full 045")。
@@ -1142,18 +1147,24 @@ namespace Hidano.AvatarSetupTool.Editor
             Func<bool> checkCancel, string shotLabel, string debugText = null)
         {
             var pixels = RenderStill(preview, view, checkCancel, shotLabel);
-            var texture = new Texture2D(view.RenderWidth, view.RenderHeight, TextureFormat.RGB24, false);
-            texture.SetPixels32(pixels);
-            var bytes = texture.EncodeToPNG();
+            var bytes = ImageConversion.EncodeArrayToPNG(
+                pixels, GraphicsFormat.R8G8B8_SRGB,
+                (uint)view.RenderWidth, (uint)view.RenderHeight, (uint)(view.RenderWidth * 3));
+            if (bytes == null || bytes.Length == 0)
+            {
+                throw new CaptureRenderFailedException(
+                    $"PNG エンコードに失敗しました (EncodeArrayToPNG が空の結果を返しました): {shotLabel}、"
+                    + $"出力解像度 {view.RenderWidth}x{view.RenderHeight}。");
+            }
+
             if (!string.IsNullOrEmpty(debugText))
             {
                 bytes = PngMetadata.WithText(bytes, "Comment", debugText);
             }
 
             File.WriteAllBytes(filePath, bytes);
-            Object.DestroyImmediate(texture);
             return makeGifFrame
-                ? Downscale(pixels, view.RenderWidth, view.AnimWidth, view.AnimHeight, topDown: true)
+                ? DownscaleRgb24ToColor32(pixels, view.RenderWidth, view.RenderHeight, view.AnimWidth, view.AnimHeight)
                 : null;
         }
 
@@ -1173,8 +1184,9 @@ namespace Hidano.AvatarSetupTool.Editor
         }
 
         /// <summary>
-        /// 静止画 1 枚をスーパーサンプリング付きで描画し、出力解像度のピクセル (ボトムアップ行順)
-        /// を返す。<see cref="TileLayout"/> の決定に従い、正射影カメラをずらしながら非一様タイル
+        /// 静止画 1 枚をスーパーサンプリング付きで描画し、出力解像度の RGB24 (3 bytes/px)・
+        /// ボトムアップ行順の合成バッファを返す (EncodeArrayToPNG がそのまま受け取れる形式)。
+        /// <see cref="TileLayout"/> の決定に従い、正射影カメラをずらしながら非一様タイル
         /// (端タイルは剰余サイズ) で分割描画する (正射影なので分割しても結果は一致する。
         /// 単一パスは 1×1 タイルとして同一フローで扱う)。タイル用テクスチャは各タイル処理後に
         /// 即破棄し、同時生存を 1 枚に保つ。
@@ -1184,7 +1196,7 @@ namespace Hidano.AvatarSetupTool.Editor
         /// 1 回だけ再描画・再検査する。再失敗時は診断情報付きの
         /// <see cref="CaptureRenderFailedException"/> を送出し、部分結果を返さない。
         /// </summary>
-        private static Color32[] RenderStill(
+        private static byte[] RenderStill(
             PreviewRenderUtility preview, ViewSpec view, Func<bool> checkCancel, string shotLabel)
         {
             return RenderStill(preview, view, StillLayout(view), checkCancel, shotLabel);
@@ -1202,7 +1214,7 @@ namespace Hidano.AvatarSetupTool.Editor
         /// 等価性テストは辺長上限を強制的に絞ったレイアウトを注入して
         /// 多タイル描画と単一パス描画を同一フローで比較する。
         /// </summary>
-        internal static Color32[] RenderStill(
+        internal static byte[] RenderStill(
             PreviewRenderUtility preview, ViewSpec view, TileLayout layout,
             Func<bool> checkCancel, string shotLabel)
         {
@@ -1216,7 +1228,7 @@ namespace Hidano.AvatarSetupTool.Editor
             var width = view.RenderWidth;
             var height = view.RenderHeight;
             var factor = layout.Factor;
-            var result = new Color32[width * height];
+            var result = new byte[width * height * 3];
 
             // タイル矩形 (出力 px) → カメラ矩形 (orthoSize・中心座標) の換算は double で計算し、
             // カメラへ設定する直前に float 化する。端の剰余タイルでもピクセル境界に正確に一致させる
@@ -1270,7 +1282,7 @@ namespace Hidano.AvatarSetupTool.Editor
                         }
                     }
 
-                    DownscaleInto(pixels, rect.Width * factor, factor,
+                    DownscaleIntoRgb24(pixels, rect.Width * factor, factor,
                         result, width, rect.X, rect.Y, rect.Width, rect.Height);
                 }
             }
