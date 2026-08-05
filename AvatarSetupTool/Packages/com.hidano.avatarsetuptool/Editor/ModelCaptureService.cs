@@ -461,9 +461,10 @@ namespace Hidano.AvatarSetupTool.Editor
         }
 
         // 実測ベースのスループット (px/秒)。8K 静止画の実測 (Ryzen 9 9900X) で較正。
-        // 静止画の描画レートは SSAA タイルの読み戻し・縮小・GC を含むため動画フレームより遅い
-        private const double StillRenderRate = 50e6; // SSAA 描画 + 読み戻し + 縮小
-        private const double PngEncodeRate = 50e6; // PNG エンコード + 書き込み
+        // 静止画は新経路 (8K・SSAA x2・4096px タイル 4x4) の実測で、タイル切替・読み戻し・
+        // RGB24 縮小合成のオーバーヘッドを含む。PNG は EncodeArrayToPNG 経路の実測
+        private const double StillRenderRate = 90e6; // SSAA タイル描画 + 読み戻し + RGB24 縮小合成
+        private const double PngEncodeRate = 26e6; // EncodeArrayToPNG + iTXt 挿入 + 書き込み
         private const double VideoRenderRate = 90e6; // 動画フレームの描画 + 読み戻し + 縮小
         private const double GifEncodeRate = 14e6; // GIF 量子化 + エンコード
         private const double Mp4EncodeRate = 50e6; // H.264 エンコード
