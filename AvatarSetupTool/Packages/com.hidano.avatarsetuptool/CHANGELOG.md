@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- FBX の初回インポート時に Blend Shape Normals を Import に設定するようにした (Read/Write Enable・Humanoid リグの自動設定と同じく、インポート済みの FBX には影響しない)
+
 ## [0.7.2] - 2026-07-30
 
 ### Changed

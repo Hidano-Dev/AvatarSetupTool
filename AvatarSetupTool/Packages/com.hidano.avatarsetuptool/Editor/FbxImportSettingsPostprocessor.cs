@@ -5,7 +5,7 @@ namespace Hidano.AvatarSetupTool.Editor
 {
     /// <summary>
     /// FBX の初回インポート時に、Mesh の Read/Write Enable と
-    /// Humanoid リグを有効化する。
+    /// Humanoid リグを有効化し、Blend Shape Normals を Import に設定する。
     /// 既にインポート済み(.meta が存在する)FBX の設定は変更しない。
     /// </summary>
     public sealed class FbxImportSettingsPostprocessor : AssetPostprocessor
@@ -25,6 +25,7 @@ namespace Hidano.AvatarSetupTool.Editor
 
             importer.isReadable = true;
             importer.animationType = ModelImporterAnimationType.Human;
+            importer.importBlendShapeNormals = ModelImporterNormals.Import;
         }
     }
 }
