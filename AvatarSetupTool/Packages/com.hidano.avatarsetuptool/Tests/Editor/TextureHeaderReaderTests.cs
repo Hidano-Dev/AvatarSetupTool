@@ -25,6 +25,20 @@ namespace Hidano.AvatarSetupTool.Editor.Tests
             Assert.That(dimensions.Height, Is.EqualTo(expectedHeight));
         }
 
+        [TestCase("jpg", 4096, 2048)]
+        [TestCase("jpeg", 4096, 2048)]
+        [TestCase("tif", 3000, 2000)]
+        [TestCase("tiff", 3000, 2000)]
+        [TestCase("exr", 2048, 1024)]
+        [TestCase("hdr", 1920, 1080)]
+        public void TryRead_ScannedFormats_ReturnsDimensions(string extension, int expectedWidth, int expectedHeight)
+        {
+            var path = Write(extension, BuildScannedHeader(extension, expectedWidth, expectedHeight));
+            Assert.That(TextureHeaderReader.TryRead(path, out var dimensions), Is.True);
+            Assert.That(dimensions.Width, Is.EqualTo(expectedWidth));
+            Assert.That(dimensions.Height, Is.EqualTo(expectedHeight));
+        }
+
         [TestCase("PNG")][TestCase("jpg")][TestCase("jpeg")][TestCase("tga")][TestCase("psd")][TestCase("psb")]
         [TestCase("bmp")][TestCase("gif")][TestCase("tif")][TestCase("tiff")][TestCase("exr")][TestCase("hdr")]
         public void IsSupportedExtension_IsCaseInsensitive(string extension) => Assert.That(TextureHeaderReader.IsSupportedExtension("image." + extension), Is.True);
@@ -61,6 +75,39 @@ namespace Hidano.AvatarSetupTool.Editor.Tests
                 case "gif": Array.Copy(new byte[] { (byte)'G', (byte)'I', (byte)'F', (byte)'8', (byte)'9', (byte)'a' }, bytes, 6); PutLe16(bytes, 6, width); PutLe16(bytes, 8, height); break;
             }
             return bytes;
+        }
+
+        private static byte[] BuildScannedHeader(string extension, int width, int height)
+        {
+            if (extension == "jpg" || extension == "jpeg")
+            {
+                return new byte[] { 0xff, 0xd8, 0xff, 0xc0, 0, 11, 8, (byte)(height >> 8), (byte)height,
+                    (byte)(width >> 8), (byte)width, 1, 1, 0x11, 0 };
+            }
+
+            if (extension == "tif" || extension == "tiff")
+            {
+                var bytes = new byte[8 + 2 + 24 + 4];
+                bytes[0] = (byte)'I'; bytes[1] = (byte)'I'; bytes[2] = 42; PutLe(bytes, 4, 8);
+                PutLe16(bytes, 8, 2);
+                PutLe16(bytes, 10, 256); PutLe16(bytes, 12, 4); PutLe(bytes, 14, 1); PutLe(bytes, 18, width);
+                PutLe16(bytes, 22, 257); PutLe16(bytes, 24, 4); PutLe(bytes, 26, 1); PutLe(bytes, 30, height);
+                return bytes;
+            }
+
+            if (extension == "exr")
+            {
+                using (var stream = new MemoryStream())
+                using (var writer = new BinaryWriter(stream))
+                {
+                    writer.Write(new byte[] { 0x76, 0x2f, 0x31, 0x01, 2, 0, 0, 0 });
+                    writer.Write(System.Text.Encoding.ASCII.GetBytes("dataWindow\0box2i\0"));
+                    writer.Write(16); writer.Write(0); writer.Write(0); writer.Write(width - 1); writer.Write(height - 1);
+                    writer.Write((byte)0); return stream.ToArray();
+                }
+            }
+
+            return System.Text.Encoding.ASCII.GetBytes("#?RADIANCE\nFORMAT=32-bit_rle_rgbe\n\n-Y " + height + " +X " + width + "\n");
         }
 
         private static void PutLe16(byte[] b, int o, int v) { b[o] = (byte)v; b[o + 1] = (byte)(v >> 8); }
