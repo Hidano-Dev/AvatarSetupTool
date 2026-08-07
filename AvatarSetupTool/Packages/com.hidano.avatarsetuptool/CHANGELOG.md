@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-08-07
+
+### Added
+
+- テクスチャの初回インポート時に、画像ヘッダから読み取った実解像度に基づいて maxTextureSize を自動設定するようにした。長辺を包含する最小の選択肢 (32〜16384) を選ぶため、小さいテクスチャがデフォルトの 2048 のまま無駄にメモリを確保することがなくなる。PNG / JPEG / TGA / PSD / PSB / BMP / GIF / TIFF / EXR / HDR に対応し、ヘッダ部だけを読むため巨大なファイルでも高速。インポート済みのテクスチャは変更しない
+- Project ウィンドウの右クリックメニューに「Avatar Setup Tool > Validate Texture Max Size」を追加。選択したフォルダ / テクスチャ配下の maxTextureSize を検証し、最適値と一致しないものを一覧表示のうえ確認ダイアログから一括修正できる (進捗バーとキャンセルに対応。詳細はコンソールにも出力)
+
 ### Changed
 
 - FBX の初回インポート時に Blend Shape Normals を Import に設定するようにした (Read/Write Enable・Humanoid リグの自動設定と同じく、インポート済みの FBX には影響しない)
