@@ -1,4 +1,5 @@
 using System;
+using System.Diagnostics;
 using System.IO;
 using NUnit.Framework;
 
@@ -53,6 +54,59 @@ namespace Hidano.AvatarSetupTool.Editor.Tests
             Assert.That(TextureHeaderReader.TryRead(path, out _), Is.False);
             path = Write("unknown", BuildHeader("png", 2, 2));
             Assert.That(TextureHeaderReader.TryRead(path, out _), Is.False);
+        }
+
+        [TestCase("png")]
+        [TestCase("tga")]
+        [TestCase("psd")]
+        [TestCase("bmp")]
+        [TestCase("gif")]
+        [TestCase("jpg")]
+        [TestCase("tif")]
+        [TestCase("exr")]
+        [TestCase("hdr")]
+        public void TryRead_TruncatedHeader_ReturnsFalseWithoutThrowing(string extension)
+        {
+            var completeHeader = extension == "jpg" || extension == "tif" || extension == "exr" || extension == "hdr"
+                ? BuildScannedHeader(extension, 128, 64)
+                : BuildHeader(extension, 128, 64);
+            var truncatedHeader = new byte[Math.Max(1, completeHeader.Length / 2)];
+            Array.Copy(completeHeader, truncatedHeader, truncatedHeader.Length);
+            var path = Write(extension, truncatedHeader);
+
+            Assert.That(TextureHeaderReader.TryRead(path, out _), Is.False);
+        }
+
+        [Test]
+        public void TryRead_DoesNotModifyFileContentOrTimestamp()
+        {
+            var path = Write("png", BuildHeader("png", 4096, 2048));
+            var expectedContent = File.ReadAllBytes(path);
+            var expectedTimestamp = DateTime.UtcNow.AddMinutes(-5);
+            File.SetLastWriteTimeUtc(path, expectedTimestamp);
+
+            Assert.That(TextureHeaderReader.TryRead(path, out var dimensions), Is.True);
+            Assert.That(dimensions.Width, Is.EqualTo(4096));
+            Assert.That(dimensions.Height, Is.EqualTo(2048));
+            Assert.That(File.ReadAllBytes(path), Is.EqualTo(expectedContent));
+            Assert.That(File.GetLastWriteTimeUtc(path), Is.EqualTo(expectedTimestamp));
+        }
+
+        [Test]
+        public void TryRead_LargeBodyReadsHeaderOnly()
+        {
+            var header = BuildHeader("png", 4096, 2048);
+            var bytes = new byte[8 * 1024 * 1024];
+            Array.Copy(header, bytes, header.Length);
+            var path = Write("png", bytes);
+            var stopwatch = Stopwatch.StartNew();
+
+            Assert.That(TextureHeaderReader.TryRead(path, out var dimensions), Is.True);
+
+            stopwatch.Stop();
+            Assert.That(dimensions.Width, Is.EqualTo(4096));
+            Assert.That(dimensions.Height, Is.EqualTo(2048));
+            Assert.That(stopwatch.Elapsed, Is.LessThan(TimeSpan.FromSeconds(1)));
         }
 
         private string Write(string extension, byte[] bytes)
