@@ -144,6 +144,18 @@ namespace Hidano.AvatarSetupTool.Editor.Tests
         }
 
         [Test]
+        public void FirstImport_NonPowerOfTwoPng_RoundsUpLongestSideToOptimalSize()
+        {
+            File.WriteAllBytes(absolutePath, BuildPngHeader(600, 400));
+
+            AssetDatabase.ImportAsset(AssetPath, ImportAssetOptions.ForceUpdate);
+
+            var importer = AssetImporter.GetAtPath(AssetPath) as TextureImporter;
+            Assert.That(importer, Is.Not.Null);
+            Assert.That(importer.maxTextureSize, Is.EqualTo(1024));
+        }
+
+        [Test]
         public void Reimport_ExistingTexture_PreservesMaxTextureSize()
         {
             File.WriteAllBytes(absolutePath, BuildPngHeader(4096, 4096));

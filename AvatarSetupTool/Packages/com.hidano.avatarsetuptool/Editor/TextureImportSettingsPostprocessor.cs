@@ -33,7 +33,7 @@ namespace Hidano.AvatarSetupTool.Editor
             catch (Exception exception)
             {
                 Debug.LogWarning(
-                    $"テクスチャの maxTextureSize 自動調整に失敗しました: {assetPath}\n{exception}");
+                    $"[TextureMaxSize] テクスチャの maxTextureSize 自動調整に失敗しました: {assetPath}\n{exception}");
             }
         }
     }
