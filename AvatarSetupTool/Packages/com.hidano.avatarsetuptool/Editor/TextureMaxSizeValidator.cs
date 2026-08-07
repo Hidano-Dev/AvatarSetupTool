@@ -147,6 +147,65 @@ namespace Hidano.AvatarSetupTool.Editor
             return new TextureMaxSizeValidationReport(issues, scannedCount, skippedCount, cancelled);
         }
 
+        public static TextureMaxSizeFixResult ApplyFixes(
+            IReadOnlyList<TextureMaxSizeIssue> issues,
+            TextureMaxSizeProgress progress)
+        {
+            var fixedCount = 0;
+            var failedCount = 0;
+            var cancelled = false;
+            var count = issues == null ? 0 : issues.Count;
+            var batchEditing = count > 1;
+
+            if (batchEditing)
+            {
+                AssetDatabase.StartAssetEditing();
+            }
+
+            try
+            {
+                for (var i = 0; i < count; i++)
+                {
+                    var issue = issues[i];
+                    try
+                    {
+                        var importer = AssetImporter.GetAtPath(issue.AssetPath) as TextureImporter;
+                        if (importer == null)
+                        {
+                            failedCount++;
+                            LogSkipped(issue.AssetPath, "TextureImporter を取得できませんでした");
+                        }
+                        else
+                        {
+                            importer.maxTextureSize = issue.OptimalMaxSize;
+                            importer.SaveAndReimport();
+                            fixedCount++;
+                        }
+                    }
+                    catch (Exception exception)
+                    {
+                        failedCount++;
+                        LogSkipped(issue.AssetPath, exception.Message);
+                    }
+
+                    if (progress != null && !progress(i + 1, count, issue.AssetPath))
+                    {
+                        cancelled = true;
+                        break;
+                    }
+                }
+            }
+            finally
+            {
+                if (batchEditing)
+                {
+                    AssetDatabase.StopAssetEditing();
+                }
+            }
+
+            return new TextureMaxSizeFixResult(fixedCount, failedCount, cancelled);
+        }
+
         private static void AddIfTextureImporter(
             string assetPath,
             HashSet<string> seen,
@@ -190,5 +249,19 @@ namespace Hidano.AvatarSetupTool.Editor
         {
             Debug.LogWarning($"[TextureMaxSize] {assetPath}: {reason}");
         }
+    }
+
+    internal readonly struct TextureMaxSizeFixResult
+    {
+        public TextureMaxSizeFixResult(int fixedCount, int failedCount, bool cancelled)
+        {
+            FixedCount = fixedCount;
+            FailedCount = failedCount;
+            Cancelled = cancelled;
+        }
+
+        public int FixedCount { get; }
+        public int FailedCount { get; }
+        public bool Cancelled { get; }
     }
 }
