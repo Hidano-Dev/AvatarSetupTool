@@ -7,7 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.8.0] - 2026-08-07
+## [0.8.0] - 2026-08-08
+
+### Fixed
+
+- 8K などの高解像度撮影で、VRAM 確保失敗や TDR (GPU ドライバのタイムアウト) により黒い PNG が黙って保存されることがあった問題を修正。読み戻したフレームの全画素黒 (背景は常にグレーのため描画失敗と判定できる) を検出したら 1 回リトライし、それでも黒の場合はファイルを保存せず、解像度・タイル情報を含むエラーとして報告する
 
 ### Added
 
@@ -16,6 +20,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- 静止画のタイル分割描画の発動条件を「SSAA 適用後のサイズが GPU の maxTextureSize を超えたときのみ」から、安全上限 (4096px) と VRAM 予算に基づくタイル辺長の算出へ一般化。8K + SSAA×2 で 16384px 四方の単一 RenderTexture (約 3GB VRAM) を確保しに行かなくなり、低 VRAM 環境でも 4096px 級タイルの分割描画で完走する (正射影のため合成結果は単一パス描画と一致。実機検証で全画素 ±1 階調以内を確認)。これに伴い VRAM 不足時に SSAA 倍率を 1 へ落とす降格を廃止し、擬似 VRAM 256MB の条件でも SSAA×2 を維持したまま 8K を撮影できることを確認済み
+- 静止画の PNG エンコードを Texture2D + SetPixels32 + EncodeToPNG の全面中間コピー経由から RGB24 byte[] の直接エンコードへ置換 (GIF のフレーム共有経路も追随)。8K 撮影時の CPU 側ピークメモリ増分は実測 514 MiB で、従来実装の約 1.5〜2GB/枚 から大幅に削減。メモリ見積もり・撮影可否判定・所要時間の見積もり係数も新経路に合わせて更新した
 - FBX の初回インポート時に Blend Shape Normals を Import に設定するようにした (Read/Write Enable・Humanoid リグの自動設定と同じく、インポート済みの FBX には影響しない)
 
 ## [0.7.2] - 2026-07-30
